@@ -1,6 +1,6 @@
 ---
 name: reflect
-description: End-of-session review that proposes lesson, skill or check changes with evidence, as a diff in the pull request for a person to merge. Use at the end of a work session, before the final commit, or when asked to reflect, save a lesson or fix a skill.
+description: Proposes lessons, skills or checks at session end. An independent reviewer drafts each change with its evidence, as a diff in the pull request for a person to merge. Use at the end of a work session, before the final commit, or when asked to reflect, save a lesson or fix a skill.
 ---
 
 # Reflect: propose what this session taught, with evidence
