@@ -37,7 +37,7 @@ built this way.
 
 ## Commands
 ```bash
-npm ci --ignore-scripts && npm rebuild better-sqlite3   # install (only better-sqlite3 runs its install script)
+npm ci && npm rebuild better-sqlite3 --ignore-scripts=false   # .npmrc blocks install scripts; only better-sqlite3 runs its own
 npm run check        # typecheck (src + kit) + lint + tests: run before every commit
 npm test             # vitest; Postgres tests run when HERMOD_TEST_DATABASE_URL is set
 npm run build        # runtime to dist/
