@@ -1,0 +1,12 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "allowJs": true,
+    "checkJs": true,
+    "strict": false,
+    "noImplicitAny": false,
+    "noUncheckedIndexedAccess": false,
+    "noEmit": true
+  },
+  "include": ["kit/files/.claude/hermod/**/*.mjs", "scripts/**/*.mjs"]
+}

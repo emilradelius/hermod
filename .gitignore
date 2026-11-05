@@ -1,0 +1,16 @@
+# dependencies and builds
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+
+# secrets: never commit
+.env
+.env.*
+!.env.example
+
+# Hermod's local, per-machine session data (ledger, session state)
+.claude/hermod/.local/
+
+# OS / editor
+.DS_Store

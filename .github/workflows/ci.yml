@@ -1,0 +1,52 @@
+name: CI
+
+# Runs on every push to main and on every pull request. Needs no secrets:
+# the Postgres service is a throwaway container, and the evals use the fake model.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          # A throwaway container that lives only for this job; not a secret.
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      HERMOD_TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
+      HERMOD_REQUIRE_PG_TESTS: "1"
+    steps:
+      # Actions are pinned to full commit SHAs (the tag is in the comment).
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm rebuild better-sqlite3
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm test
+      - run: npm run build
+      - run: npm run eval
+      - name: Kit validates itself
+        run: node kit/files/.claude/hermod/validate.mjs --root . --kit
