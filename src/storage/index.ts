@@ -23,3 +23,15 @@ export {
   StorageError,
   type StorageOptions,
 } from "./common.js";
+export {
+  createPostgresStorage,
+  fromPg,
+  fromPostgresJs,
+  pgErrorCode,
+  pgSearchQuery,
+  type PgQueryable,
+  type PostgresJsSql,
+  type PostgresStorageOptions,
+  type SqlExecutor,
+} from "./postgres.js";
+export { PG_MIGRATIONS, POSTGRES_DEFAULT_SCHEMA, validatePostgresSchema } from "./postgres-schema.js";

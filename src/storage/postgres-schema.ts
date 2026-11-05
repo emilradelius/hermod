@@ -3,7 +3,8 @@
  * versioned migrations.
  *
  * Conventions: everything lives in one schema (default "hermod"), always schema-qualified and quoted; JSON is jsonb;
- * times are timestamptz and are returned as ISO strings in toISOString() format (UTC, milliseconds); text sorts use
+ * whole numbers are bigint (the record builders allow any safe integer); times are timestamptz and are returned as ISO
+ * strings in toISOString() format (UTC, milliseconds); text sorts use
  * COLLATE "C" (code point order, the same as SQLite). Row level security is enabled on every table with no policies:
  * writing policies is the app's job (the owner role that runs the adapter bypasses RLS; other roles see nothing).
  *
@@ -166,10 +167,22 @@ export const PG_COLUMNS: Record<TableName, Record<string, PgKind>> = {
   },
 };
 
+/** Columns that are written but never read back into a record (the folded search text of a message). */
+export const PG_WRITE_ONLY_COLUMNS: Partial<Record<TableName, Record<string, PgKind>>> = {
+  messages: { search_text: "text" },
+};
+
+/** The type of a column the adapter writes; throws for a column the schema does not have. */
+export function pgColumnKind(table: TableName, column: string): PgKind {
+  const kind = PG_COLUMNS[table][column] ?? PG_WRITE_ONLY_COLUMNS[table]?.[column];
+  if (kind === undefined) throw new StorageError(`The Postgres table "${table}" has no column "${column}".`);
+  return kind;
+}
+
 /** Explicit casts on every parameter, so neither driver has to guess a type (JSON and times travel as text). */
 export const PG_CAST: Record<PgKind, string> = {
   text: "::text",
-  int: "::int",
+  int: "::bigint",
   float: "::float8",
   bool: "::boolean",
   json: "::text::jsonb",
@@ -239,7 +252,7 @@ function initialSchema(schema: string): string {
       name text NOT NULL,
       mode text NOT NULL,
       accuracy_bar double precision NOT NULL,
-      min_samples integer NOT NULL,
+      min_samples bigint NOT NULL,
       monthly_cost_cap_usd double precision,
       created_at timestamptz NOT NULL,
       updated_at timestamptz NOT NULL
@@ -260,7 +273,7 @@ function initialSchema(schema: string): string {
       skills_index text NOT NULL,
       counters jsonb NOT NULL,
       meta jsonb NOT NULL,
-      next_seq integer NOT NULL DEFAULT 0
+      next_seq bigint NOT NULL DEFAULT 0
     );
     CREATE INDEX sessions_agent_started ON ${t.sessions} (agent_id, started_at DESC, ord DESC);
     ${rlsAndComment(t.sessions, "sessions (memory snapshot and skills index frozen at start; next_seq numbers messages)")}
@@ -269,7 +282,7 @@ function initialSchema(schema: string): string {
       ord bigint GENERATED ALWAYS AS IDENTITY,
       id text PRIMARY KEY,
       session_id text NOT NULL REFERENCES ${t.sessions} (id) ON DELETE CASCADE,
-      seq integer NOT NULL,
+      seq bigint NOT NULL,
       role text NOT NULL,
       content jsonb NOT NULL,
       text text NOT NULL,
@@ -285,10 +298,10 @@ function initialSchema(schema: string): string {
       id text PRIMARY KEY,
       agent_id text NOT NULL,
       name text NOT NULL,
-      cap_chars integer NOT NULL,
+      cap_chars bigint NOT NULL,
       auto_apply text NOT NULL,
       content text NOT NULL,
-      version integer NOT NULL,
+      version bigint NOT NULL,
       updated_at timestamptz NOT NULL,
       UNIQUE (agent_id, name)
     );
@@ -300,22 +313,22 @@ function initialSchema(schema: string): string {
       name text NOT NULL,
       description text NOT NULL,
       body text NOT NULL,
-      version integer NOT NULL,
+      version bigint NOT NULL,
       status text NOT NULL,
       pinned boolean NOT NULL,
       created_at timestamptz NOT NULL,
       updated_at timestamptz NOT NULL,
       last_used_at timestamptz,
-      views integer NOT NULL,
-      uses integer NOT NULL,
-      patches integer NOT NULL,
+      views bigint NOT NULL,
+      uses bigint NOT NULL,
+      patches bigint NOT NULL,
       UNIQUE (agent_id, name)
     );
     ${rlsAndComment(t.skills, "skills (never deleted; archived instead)")}
 
     CREATE TABLE ${t.skill_versions} (
       skill_id text NOT NULL REFERENCES ${t.skills} (id) ON DELETE CASCADE,
-      version integer NOT NULL,
+      version bigint NOT NULL,
       description text NOT NULL,
       body text NOT NULL,
       created_at timestamptz NOT NULL,
@@ -378,10 +391,10 @@ function initialSchema(schema: string): string {
       session_id text,
       model text NOT NULL,
       purpose text NOT NULL,
-      input_tokens integer NOT NULL,
-      output_tokens integer NOT NULL,
-      cache_read_tokens integer NOT NULL,
-      cache_write_tokens integer NOT NULL,
+      input_tokens bigint NOT NULL,
+      output_tokens bigint NOT NULL,
+      cache_read_tokens bigint NOT NULL,
+      cache_write_tokens bigint NOT NULL,
       cost_usd double precision NOT NULL
     );
     CREATE INDEX costs_agent_at ON ${t.costs} (agent_id, at);
@@ -402,7 +415,7 @@ function initialSchema(schema: string): string {
       last_run_at timestamptz,
       last_status text,
       last_error text,
-      failures integer NOT NULL,
+      failures bigint NOT NULL,
       locked_until timestamptz,
       locked_by text,
       UNIQUE (agent_id, name)
@@ -454,7 +467,7 @@ BEGIN
   END IF;
   IF to_regclass('${t.migrations.replaceAll("'", "''")}') IS NULL THEN
     CREATE TABLE ${t.migrations} (
-      version integer PRIMARY KEY,
+      version bigint PRIMARY KEY,
       name text NOT NULL,
       applied_at timestamptz NOT NULL DEFAULT now()
     );
