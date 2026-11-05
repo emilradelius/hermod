@@ -21,6 +21,9 @@ not done or not verified, and one line per recent session. Each decision is one 
 
 ## Not done / not verified
 - Nothing is verified yet beyond the toolchain smoke test and the fake model client's tests.
+- `npm audit` reports 9 moderate findings, all from one advisory: a denial of service in `minimatch` < 11.0.1, which
+  is pulled in only by the lint tooling (ESLint, typescript-eslint). It is a dev-time dependency with no runtime
+  exposure. Revisit when those packages move to minimatch ≥ 11.0.1. Forcing it now could break them.
 
 ## Recent sessions
 - 2026-11-05: first build session (in progress).
