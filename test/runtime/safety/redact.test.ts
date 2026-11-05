@@ -14,6 +14,10 @@ import {
 import type { Redactor } from "../../../src/types.js";
 import { chars, fake, keep } from "./fakes.js";
 
+// Built at runtime so no key-shaped literal sits in this public repository.
+const PEM_BEGIN = ["-----BEGIN", "PRIVATE", "KEY-----"].join(" ");
+const PEM_END = ["-----END", "PRIVATE", "KEY-----"].join(" ");
+
 const both = composeRedactors(secretsRedactor, piiRedactor);
 
 /** Asserts the secret is gone, the replacement names the kind, and the surrounding text is unchanged. */
@@ -393,10 +397,10 @@ describe("redactor guarantees", () => {
       "+4".repeat(50_000),
       "1 ".repeat(100_000),
       "Bearer ".repeat(20_000),
-      `-----BEGIN PRIVATE KEY-----\n${`${chars(64, 60)}\n`.repeat(3_000)}`,
+      `${PEM_BEGIN}\n${`${chars(64, 60)}\n`.repeat(3_000)}`,
       `${chars(64, 61)}\n`.repeat(3_000),
-      `${`${chars(64, 62)}\n`.repeat(3_000)}-----END PRIVATE KEY-----`,
-      `-----BEGIN PRIVATE KEY-----${" ".repeat(50_000)}`,
+      `${`${chars(64, 62)}\n`.repeat(3_000)}${PEM_END}`,
+      `${PEM_BEGIN}${" ".repeat(50_000)}`,
     ];
     for (const input of inputs) {
       const started = performance.now();
