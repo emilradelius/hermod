@@ -5,8 +5,9 @@
  *
  * Errors: SKILL.md missing; frontmatter missing or invalid; name missing, not lowercase-and-hyphens, longer
  * than 64 characters or different from the folder name; description missing, empty or over 1,024
- * characters; a relative link into references/, scripts/, templates/ or assets/ that does not exist (or
- * leaves the skill folder); prompt-injection findings of severity error; anything that looks like a secret.
+ * characters; a markdown link into references/, scripts/, templates/ or assets/ that does not exist (or
+ * leaves the skill folder), and a `code` path into one of those folders that does not exist when the skill
+ * folder has that folder; prompt-injection findings of severity error; anything that looks like a secret.
  * Warnings: unknown frontmatter keys; a first sentence of the description longer than skills.indexChars;
  * a body longer than curator.maxSkillLines lines; unexpected entries in the skill folder; doubtful values
  * of known keys; description + when_to_use longer than Claude Code's 1,536-character listing; prompt-
@@ -16,7 +17,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { parseFrontmatter } from "./frontmatter.mjs";
 import { scanText } from "./injection.mjs";
-import { isPlainObject, readText, safeEnd } from "./io.mjs";
+import { graphemeEnd, isPlainObject, readText } from "./io.mjs";
 import { normalizeRelPath } from "./paths.mjs";
 import { detectSecrets } from "./redact.mjs";
 
@@ -142,7 +143,8 @@ export function firstSentence(description) {
 }
 
 /**
- * Cuts text to at most max characters (with "…"), at a word boundary when that keeps most of it.
+ * Cuts text to at most max characters (with "…"), at a word boundary when that keeps most of it, never
+ * inside a grapheme.
  * @param {string} text
  * @param {number} max
  * @returns {string}
@@ -150,7 +152,7 @@ export function firstSentence(description) {
 function cutAtWord(text, max) {
   if (text.length <= max) return text;
   if (max <= 1) return "…".slice(0, Math.max(0, max));
-  let cut = safeEnd(text, max - 1);
+  let cut = graphemeEnd(text, max - 1);
   const space = text.lastIndexOf(" ", cut);
   if (space >= Math.floor(max * 0.6)) cut = space;
   return `${text.slice(0, cut).replace(/[\s,;:.–—-]+$/, "")}…`;
@@ -216,15 +218,15 @@ function shown(value) {
 }
 
 /**
- * Local file references in the body: markdown links, reference definitions and `code` spans whose path
- * names something inside references/, scripts/, templates/ or assets/. Fenced code is skipped, and so are
- * globs and placeholders ("references/*.md", "scripts/<name>.sh").
+ * Local file references in the body: markdown links, reference definitions ("link") and `code` spans
+ * ("code") whose path names something inside references/, scripts/, templates/ or assets/. Fenced code is
+ * skipped, and so are globs and placeholders ("references/*.md", "scripts/<name>.sh").
  * @param {string} body
  * @param {number} firstLine line number of body's first line
- * @returns {Array<{ target: string, line: number }>}
+ * @returns {Array<{ target: string, line: number, kind: "link" | "code" }>}
  */
 function localReferences(body, firstLine) {
-  /** @type {Array<{ target: string, line: number }>} */
+  /** @type {Array<{ target: string, line: number, kind: "link" | "code" }>} */
   const out = [];
   /** @type {{ char: string, length: number } | null} */
   let fence = null;
@@ -240,13 +242,15 @@ function localReferences(body, firstLine) {
       fence = { char: open[1][0], length: open[1].length };
       return;
     }
-    /** @type {string[]} */
+    /** @type {Array<{ raw: string, kind: "link" | "code" }>} */
     const candidates = [];
-    for (const m of line.matchAll(/\]\(\s*(<[^>\n]*>|[^)\s]+)(?:\s+(?:"[^"]*"|'[^']*'|\([^)]*\)))?\s*\)/g)) candidates.push(m[1]);
+    for (const m of line.matchAll(/\]\(\s*(<[^>\n]*>|[^)\s]+)(?:\s+(?:"[^"]*"|'[^']*'|\([^)]*\)))?\s*\)/g)) {
+      candidates.push({ raw: m[1], kind: "link" });
+    }
     const def = /^ {0,3}\[[^\]]+\]:\s*(<[^>\n]*>|\S+)/.exec(line);
-    if (def) candidates.push(def[1]);
-    for (const m of line.matchAll(/(`+)([^`\n]+?)\1/g)) candidates.push(m[2].trim().split(/\s+/)[0] ?? "");
-    for (const raw of candidates) {
+    if (def) candidates.push({ raw: def[1], kind: "link" });
+    for (const m of line.matchAll(/(`+)([^`\n]+?)\1/g)) candidates.push({ raw: m[2].trim().split(/\s+/)[0] ?? "", kind: "code" });
+    for (const { raw, kind } of candidates) {
       let target = raw.replace(/^<|>$/g, "").replace(/[#?].*$/, "");
       try {
         target = decodeURI(target);
@@ -258,7 +262,7 @@ function localReferences(body, firstLine) {
       // "references/" on its own names the folder in general; only paths to something inside it are checked.
       if (!LINK_DIRS.includes(segments[0]) || segments.filter(Boolean).length < 2) continue;
       if (/[*?<>{}$|[\]]/.test(target)) continue;
-      out.push({ target, line: n });
+      out.push({ target, line: n, kind });
     }
   });
   return out;
@@ -424,7 +428,26 @@ export function validateSkill(skillDir, options = {}) {
   if (report.meta.lines > maxLines) {
     warn(`the body is ${report.meta.lines} lines; keep SKILL.md under ${maxLines} (curator.maxSkillLines) and move detail into references/`);
   }
+  // Markdown links are always checked, relative to the skill folder. A bare `code` path is checked only when
+  // the skill folder has that top-level folder itself: `scripts/build.mjs` usually means the repository's own
+  // scripts/ folder, not the skill's.
+  /** @type {Map<string, boolean>} */
+  const hasDir = new Map();
+  /** @param {string} name */
+  const skillHasDir = (name) => {
+    if (!hasDir.has(name)) {
+      let found;
+      try {
+        found = fs.statSync(path.join(skillDir, name)).isDirectory();
+      } catch {
+        found = false;
+      }
+      hasDir.set(name, found);
+    }
+    return hasDir.get(name) === true;
+  };
   for (const ref of localReferences(fm.body, fm.bodyStartLine)) {
+    if (ref.kind === "code" && !skillHasDir(ref.target.split("/")[0])) continue;
     const clean = normalizeRelPath(ref.target);
     if (clean === null) {
       err(`the link "${ref.target}" leaves the skill folder`, ref.line);
@@ -436,9 +459,10 @@ export function validateSkill(skillDir, options = {}) {
   }
 
   // safety
-  for (const f of scanText(text)) {
-    (f.severity === "error" ? err : warn)(`${f.message}: ${f.excerpt}`, f.line);
-  }
+  // Uncapped scan, then capped per severity, so many warnings can never hide an error.
+  const findings = scanText(text, { maxFindings: Infinity });
+  for (const f of findings.filter((x) => x.severity === "error").slice(0, 50)) err(`${f.message}: ${f.excerpt}`, f.line);
+  for (const f of findings.filter((x) => x.severity !== "error").slice(0, 20)) warn(`${f.message}: ${f.excerpt}`, f.line);
   for (const s of detectSecrets(text)) {
     err(`looks like it contains ${s.description} (${s.excerpt}); secrets must never be committed`, s.line);
   }

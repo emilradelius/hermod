@@ -9,8 +9,8 @@
  * - ensureLocalDir(): `.claude/hermod/.local/`, with a `.gitignore` containing "*" so nothing in it is
  *   ever committed. It refuses to write through a symlink that leads outside the repository.
  * - logError(): one redacted line in `.local/errors.log`, capped at 100 KB.
- * - truncateHead()/truncateTail()/truncateChars(): cuts that never split a surrogate pair and prefer
- *   line boundaries.
+ * - truncateHead()/truncateTail()/truncateChars(): cuts that never split a character (a grapheme: a letter and
+ *   its combining marks, an emoji sequence, a flag) and prefer line boundaries.
  * - failOpen(main): runs a hook; any error is logged and the process exits 0 with no output.
  */
 import { randomBytes } from "node:crypto";
@@ -379,8 +379,68 @@ export function safeStart(text, i) {
   return isLowSurrogate(text.charCodeAt(i)) && isHighSurrogate(text.charCodeAt(i - 1)) ? i + 1 : i;
 }
 
+/** @type {Intl.Segmenter | null} */
+const SEGMENTER =
+  typeof Intl === "object" && typeof Intl.Segmenter === "function" ? new Intl.Segmenter("en", { granularity: "grapheme" }) : null;
+/** How far around a cut the grapheme search looks (segmenting the whole text would cost O(n) per cut). */
+const GRAPHEME_WINDOW = 1024;
+
 /**
- * Cuts text to at most maxChars UTF-16 units including the ellipsis, never splitting a surrogate pair.
+ * The segment of a window around i that contains index i (relative to the window), or null.
+ * @param {string} text
+ * @param {number} i 0 < i < text.length
+ * @returns {{ start: number, end: number, windowStart: number, windowEnd: number } | null}
+ */
+function graphemeAround(text, i) {
+  if (!SEGMENTER) return null;
+  const windowStart = safeStart(text, Math.max(0, i - GRAPHEME_WINDOW));
+  const windowEnd = safeEnd(text, Math.min(text.length, i + GRAPHEME_WINDOW));
+  try {
+    const seg = SEGMENTER.segment(text.slice(windowStart, windowEnd)).containing(i - windowStart);
+    if (!seg) return null;
+    const start = windowStart + seg.index;
+    return { start, end: start + seg.segment.length, windowStart, windowEnd };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The largest end index ≤ i that does not split a grapheme (a letter and its combining marks, an emoji ZWJ
+ * sequence, a flag). Falls back to safeEnd (surrogate pairs only) for clusters longer than the search window.
+ * @param {string} text
+ * @param {number} i
+ * @returns {number}
+ */
+export function graphemeEnd(text, i) {
+  if (i <= 0) return 0;
+  if (i >= text.length) return text.length;
+  const g = graphemeAround(text, i);
+  // A cluster that starts at the window's own start may really start earlier: not trustworthy.
+  if (!g || (g.start === g.windowStart && g.windowStart > 0)) return safeEnd(text, i);
+  return g.start;
+}
+
+/**
+ * The smallest start index ≥ i that does not split a grapheme. Falls back to safeStart for clusters longer
+ * than the search window.
+ * @param {string} text
+ * @param {number} i
+ * @returns {number}
+ */
+export function graphemeStart(text, i) {
+  if (i <= 0) return 0;
+  if (i >= text.length) return text.length;
+  const g = graphemeAround(text, i);
+  if (!g) return safeStart(text, i);
+  if (g.start === i) return i;
+  if (g.end === g.windowEnd && g.windowEnd < text.length) return safeStart(text, i);
+  if (g.start === g.windowStart && g.windowStart > 0) return safeStart(text, i);
+  return g.end;
+}
+
+/**
+ * Cuts text to at most maxChars UTF-16 units including the ellipsis, never splitting a grapheme.
  * Text that already fits is returned unchanged.
  * @param {unknown} text
  * @param {number} maxChars
@@ -392,8 +452,8 @@ export function truncateChars(text, maxChars, ellipsis = "…") {
   const max = Math.floor(maxChars);
   if (s.length <= max) return s;
   if (!(max > 0)) return "";
-  if (ellipsis.length >= max) return s.slice(0, safeEnd(s, max));
-  return s.slice(0, safeEnd(s, max - ellipsis.length)).trimEnd() + ellipsis;
+  if (ellipsis.length >= max) return s.slice(0, graphemeEnd(s, max));
+  return s.slice(0, graphemeEnd(s, max - ellipsis.length)).trimEnd() + ellipsis;
 }
 
 /**
@@ -401,7 +461,7 @@ export function truncateChars(text, maxChars, ellipsis = "…") {
  * @property {string} [marker] appended (head) or prepended (tail) when text is cut; counts toward the limit.
  *   Start a head marker with "\n" (end a tail marker with "\n") to put it on its own line.
  * @property {boolean} [preferLines] cut at a line boundary when that keeps at least minKeep of the budget
- *   (default true); otherwise at a space, otherwise anywhere (never inside a surrogate pair)
+ *   (default true); otherwise at a space, otherwise anywhere (never inside a grapheme)
  * @property {number} [minKeep] share of the budget a nicer cut may give up, 0..1 (default 0.5)
  */
 
@@ -421,7 +481,7 @@ export function truncateHead(text, maxChars, options = {}) {
   if (marker.length >= max) return truncateChars(marker, max, "");
   const budget = max - marker.length;
   const minKeep = budget * (options.minKeep ?? 0.5);
-  let cut = safeEnd(s, budget);
+  let cut = graphemeEnd(s, budget);
   if (options.preferLines ?? true) {
     const nl = s.lastIndexOf("\n", budget);
     if (nl >= 0 && nl >= minKeep) {
@@ -451,7 +511,7 @@ export function truncateTail(text, maxChars, options = {}) {
   if (marker.length >= max) return truncateChars(marker, max, "");
   const budget = max - marker.length;
   const minKeep = budget * (options.minKeep ?? 0.5);
-  let start = safeStart(s, s.length - budget);
+  let start = graphemeStart(s, s.length - budget);
   if ((options.preferLines ?? true) && s[start - 1] !== "\n") {
     const nl = s.indexOf("\n", start);
     if (nl >= 0 && s.length - (nl + 1) >= minKeep) start = nl + 1;

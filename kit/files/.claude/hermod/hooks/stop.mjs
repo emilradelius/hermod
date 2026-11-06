@@ -14,7 +14,8 @@
  *
  * Changed files this session: everything that differs between the HEAD saved at session start and the working
  * tree (committed, staged, unstaged and untracked), minus files that were already dirty at session start and
- * still have the same content. Without session-start state: since the merge base with the default branch,
+ * still have the same content, and minus files that were dirty at start but not hashed (dirtyPaths without a
+ * hash: their content at start is unknown, so they count as pre-existing). Without session-start state: since the merge base with the default branch,
  * else uncommitted changes only.
  */
 import { createHash } from "node:crypto";
@@ -107,7 +108,16 @@ export function sessionChanges(root, start) {
     const dirty = start.dirty;
     const wereDirty = files.filter((f) => Object.hasOwn(dirty, f));
     const now = wereDirty.length > 0 ? hashFiles(root, wereDirty) : {};
-    files = files.filter((f) => !(Object.hasOwn(dirty, f) && now[f] !== undefined && now[f] === dirty[f]));
+    // Dirty at start but not hashed (more than MAX_DIRTY_HASHES files, or hashing ran out of time): the content
+    // at start is unknown, so the file counts as pre-existing, not as changed. Paths are saved redacted, so a
+    // path that redaction changed is compared in its redacted form.
+    const unhashed = new Set((start.dirtyPaths ?? []).filter((p) => !Object.hasOwn(dirty, p)));
+    /** @param {string} f */
+    const wasDirtyUnhashed = (f) => unhashed.size > 0 && (unhashed.has(f) || unhashed.has(redact(f)));
+    files = files.filter((f) => {
+      if (Object.hasOwn(dirty, f)) return !(now[f] !== undefined && now[f] === dirty[f]);
+      return !wasDirtyUnhashed(f);
+    });
     return { files, base: start.head ?? null, source: "session-start" };
   }
   const def = defaultBranchRef(root);

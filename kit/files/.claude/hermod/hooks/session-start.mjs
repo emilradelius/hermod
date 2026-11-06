@@ -4,7 +4,8 @@
  *
  * - First start of a session id: builds the brief (lib/brief.mjs), saves it in
  *   `.claude/hermod/.local/sessions/<id>/brief.md`, and saves the session state once (head, branch,
- *   transcript path, blob hashes of the files that were already dirty, at most 300).
+ *   transcript path, blob hashes of the files that were already dirty (at most 300), and the paths of all
+ *   of them (at most 5,000) with dirtyTruncated set when not every dirty file was hashed).
  * - Resume, compact or clear of the same session id: prints the saved brief unchanged (frozen), even when
  *   the progress file or the lessons changed meanwhile, and leaves the session state alone.
  * - Removes session folders not touched for more than 30 days.
@@ -16,10 +17,8 @@ import { loadConfig } from "../lib/config.mjs";
 import { buildBrief, capBrief, cutText, gatherGit } from "../lib/brief.mjs";
 import { hashFiles } from "../lib/git.mjs";
 import { failOpen, isPlainObject, logError, readStdinJson, resolveRoot } from "../lib/io.mjs";
-import { pruneOldSessions, readBrief, writeBrief, writeSessionStart } from "../lib/state.mjs";
+import { MAX_DIRTY_HASHES, MAX_DIRTY_PATHS, pruneOldSessions, readBrief, writeBrief, writeSessionStart } from "../lib/state.mjs";
 
-/** At most this many dirty files are hashed into the session state. */
-const MAX_DIRTY_FILES = 300;
 /** Session folders older than this are removed. */
 const PRUNE_DAYS = 30;
 const CONTEXT = "session-start";
@@ -67,7 +66,11 @@ async function main(ctx) {
         head: git.head,
         branch: git.branch,
         transcriptPath: typeof transcript === "string" && transcript !== "" ? transcript : null,
-        dirty: git.repo ? hashFiles(root, git.uncommitted.slice(0, MAX_DIRTY_FILES)) : {},
+        dirty: git.repo ? hashFiles(root, git.uncommitted.slice(0, MAX_DIRTY_HASHES)) : {},
+        // Every dirty path (hashed or not), so the Stop hook never counts an unhashed one as changed.
+        dirtyPaths: git.repo ? git.uncommitted.slice(0, MAX_DIRTY_PATHS) : [],
+        dirtyTruncated: git.repo && git.uncommitted.length > MAX_DIRTY_HASHES,
+        dirtyTotal: git.repo ? git.uncommitted.length : 0,
       });
       // writeBrief redacts again (a no-op: the brief's parts are already redacted) and returns what it saved,
       // so a resume prints exactly this text.

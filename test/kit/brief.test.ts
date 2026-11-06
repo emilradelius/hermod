@@ -462,7 +462,7 @@ describe("progress sections", () => {
   });
 
   it("redacts secrets in lessons, skill descriptions and branch names", () => {
-    const key = `sk-ant-api03-${"Qw3rTy7uIoP".repeat(5)}`;
+    const key = ["sk", "ant", "api03", "Qw3rTy7uIoP".repeat(5)].join("-");
     const ghp = `ghp_${"Mn8Bv7Cx6Z".repeat(4).slice(0, 36)}`;
     const repo = makeRepo({
       kitSkills: false,

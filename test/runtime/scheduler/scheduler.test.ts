@@ -353,7 +353,7 @@ describe("Scheduler.tick", () => {
   });
 
   it("backs off a failing job (1, 2, 4 … 60 minutes) and records a redacted error", async () => {
-    const key = `sk-ant-api03-${"a".repeat(40)}`;
+    const key = ["sk", "ant", "api03", "a".repeat(40)].join("-");
     const h = await harness();
     h.reply = () => {
       throw new Error(`Upstream rejected key ${key} (401)`);

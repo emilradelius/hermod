@@ -16,6 +16,10 @@ export const SESSIONS_DIR = "sessions";
 export const SESSION_START_FILE = "session-start.json";
 export const BRIEF_FILE = "brief.md";
 export const STOP_FILE = "stop.json";
+/** At most this many dirty files are hashed into the session-start state. */
+export const MAX_DIRTY_HASHES = 300;
+/** At most this many dirty paths (hashed or not) are listed in the session-start state. */
+export const MAX_DIRTY_PATHS = 5000;
 const WINDOWS_RESERVED = /^(?:con|prn|aux|nul|com\d|lpt\d)(?:\..*)?$/i;
 
 /**
@@ -26,6 +30,11 @@ const WINDOWS_RESERVED = /^(?:con|prn|aux|nul|com\d|lpt\d)(?:\..*)?$/i;
  * @property {string | null} branch
  * @property {string | null} transcriptPath
  * @property {Record<string, string>} dirty files with uncommitted changes at start → blob sha or "deleted"
+ *   (at most MAX_DIRTY_HASHES; a file that could not be hashed is left out)
+ * @property {string[]} [dirtyPaths] every file with uncommitted changes at start, hashed or not (at most
+ *   MAX_DIRTY_PATHS). A path here without an entry in `dirty` was already dirty, but its content is unknown.
+ * @property {boolean} [dirtyTruncated] true when more files were dirty than `dirty` holds hashes for
+ * @property {number} [dirtyTotal] how many files were dirty at start
  */
 
 /**
@@ -172,6 +181,11 @@ export function readSessionStart(root, sessionId) {
   if (isPlainObject(v.dirty)) {
     for (const [p, sha] of Object.entries(v.dirty)) if (typeof sha === "string") dirty[p] = sha;
   }
+  // State written before dirtyPaths existed: the hashed files are all that is known.
+  const dirtyPaths = Array.isArray(v.dirtyPaths)
+    ? [...new Set([...Object.keys(dirty), ...v.dirtyPaths.filter((p) => typeof p === "string" && p !== "")])]
+    : Object.keys(dirty);
+  const total = typeof v.dirtyTotal === "number" && Number.isInteger(v.dirtyTotal) && v.dirtyTotal >= 0 ? v.dirtyTotal : null;
   return {
     sessionId: typeof v.sessionId === "string" ? v.sessionId : String(sessionId),
     startedAt: typeof v.startedAt === "string" ? v.startedAt : "",
@@ -179,12 +193,16 @@ export function readSessionStart(root, sessionId) {
     branch: textOrNull(v.branch),
     transcriptPath: textOrNull(v.transcriptPath),
     dirty,
+    dirtyPaths,
+    dirtyTruncated: v.dirtyTruncated === true,
+    dirtyTotal: total ?? dirtyPaths.length,
   };
 }
 
 /**
  * Saves the session-start state. By default only once: returns false (and writes nothing) when a state
- * already exists, so resume and compact keep the original baseline.
+ * already exists, so resume and compact keep the original baseline. dirtyPaths is cut to MAX_DIRTY_PATHS.
+ * Strings are redacted (object keys, so the paths in `dirty`, are kept as they are).
  * @param {string} root
  * @param {string} sessionId
  * @param {SessionStartState} state
@@ -193,7 +211,10 @@ export function readSessionStart(root, sessionId) {
  */
 export function writeSessionStart(root, sessionId, state, options = {}) {
   if (!options.overwrite && fs.existsSync(path.join(sessionDir(root, sessionId), SESSION_START_FILE))) return false;
-  writeSessionJson(root, sessionId, SESSION_START_FILE, state);
+  /** @type {Record<string, unknown>} */
+  const out = { ...state };
+  if (Array.isArray(state.dirtyPaths)) out.dirtyPaths = state.dirtyPaths.slice(0, MAX_DIRTY_PATHS);
+  writeSessionJson(root, sessionId, SESSION_START_FILE, out);
   return true;
 }
 

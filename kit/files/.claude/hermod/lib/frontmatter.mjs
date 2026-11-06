@@ -291,6 +291,7 @@ export function parseYamlLines(rawLines, firstLine = 1) {
         continue;
       }
       if (!isSeqItem(line.content)) break;
+      if (line.tab) error(line, "indentation uses a tab; use spaces");
       const after = line.content.slice(1);
       const item = after.trimStart();
       const offset = 1 + (after.length - item.length);

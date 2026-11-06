@@ -115,21 +115,22 @@ export function parseSections(text) {
   const info = scanLines(lines);
   /** @type {Section[]} */
   const sections = [];
-  /** @type {Array<{ level: number, title: string }>} */
-  const stack = [];
+  // One pass: the stack holds the sections that are still open (strictly increasing levels). A heading
+  // closes every open section of the same or a deeper level; that is where those sections end.
+  /** @type {Section[]} */
+  const open = [];
   for (let i = 0; i < total; i++) {
     const h = info[i].heading;
     if (!h) continue;
-    while (stack.length > 0 && stack[stack.length - 1].level >= h.level) stack.pop();
-    stack.push(h);
-    sections.push({ title: h.title, level: h.level, line: i + 1, endLine: total, path: stack.map((s) => s.title), body: "" });
+    while (open.length > 0 && open[open.length - 1].level >= h.level) {
+      /** @type {Section} */ (open.pop()).endLine = i;
+    }
+    const s = { title: h.title, level: h.level, line: i + 1, endLine: total, path: [...open.map((o) => o.title), h.title], body: "" };
+    open.push(s);
+    sections.push(s);
   }
-  for (let k = 0; k < sections.length; k++) {
-    const s = sections[k];
-    const next = sections.slice(k + 1).find((n) => n.level <= s.level);
-    s.endLine = next ? next.line - 1 : total;
-    s.body = lines.slice(s.line, s.endLine).join("\n");
-  }
+  // Each line sits in at most six bodies (one per heading level), so building the bodies is linear too.
+  for (const s of sections) s.body = lines.slice(s.line, s.endLine).join("\n");
   return sections;
 }
 

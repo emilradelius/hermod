@@ -347,7 +347,8 @@ function isAllowedHidden(text, index, cp) {
  * @returns {string}
  */
 function escapeHidden(s) {
-  return s.replace(HIDDEN, (ch) => `\\u{${(/** @type {number} */ (ch.codePointAt(0))).toString(16).toUpperCase()}}`);
+  // A copy of HIDDEN: replace() resets lastIndex of the regex it gets, and scanHidden is iterating HIDDEN.
+  return s.replace(new RegExp(HIDDEN.source, "g"), (ch) => `\\u{${(/** @type {number} */ (ch.codePointAt(0))).toString(16).toUpperCase()}}`);
 }
 
 /**
@@ -518,5 +519,6 @@ export function scanText(text, options = {}) {
  * @returns {InjectionFinding[]}
  */
 export function scanErrors(text) {
-  return scanText(text).filter((f) => f.severity === "error");
+  // No cap before filtering: many warnings early in a text must not push its errors out.
+  return scanText(text, { maxFindings: Infinity }).filter((f) => f.severity === "error").slice(0, 50);
 }

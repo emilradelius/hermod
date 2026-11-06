@@ -14,7 +14,7 @@
  * entries joined by SEPARATOR.
  */
 import { stripBom } from "./io.mjs";
-import { scanText } from "./injection.mjs";
+import { scanErrors } from "./injection.mjs";
 import { detectSecrets } from "./redact.mjs";
 
 /** The canonical separator between entries. */
@@ -198,8 +198,7 @@ export function validateLessons(text, options = {}) {
   }
 
   const headerStart = (stripBom(String(text ?? "")).replace(/\r\n?/g, "\n").split("\n").findIndex((l) => l.trim() !== "")) + 1;
-  for (const f of scanText(parsed.header)) {
-    if (f.severity !== "error") continue;
+  for (const f of scanErrors(parsed.header)) {
     errors.push({ message: `The header ${f.message}.`, line: headerStart + f.line - 1, entry: null });
   }
   for (const s of detectSecrets(parsed.header)) {
@@ -238,8 +237,7 @@ export function validateLessons(text, options = {}) {
     if (entry.text.startsWith("#")) {
       errors.push({ message: `Entry ${n} starts with "#"; lessons are plain sentences, not headings.`, ...at });
     }
-    for (const f of scanText(entry.text)) {
-      if (f.severity !== "error") continue;
+    for (const f of scanErrors(entry.text)) {
       errors.push({ message: `Entry ${n} ${f.message}.`, line: entry.line + f.line - 1, entry: n });
     }
     for (const s of detectSecrets(entry.text)) {
