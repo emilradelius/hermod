@@ -47,7 +47,7 @@ import { estimateBudgetCost } from "../model/cost.js";
 import { DEFAULTS, contextWindow, isEffort, pricingFor, supportsServerFallback } from "../model/models.js";
 import { createApprovalPolicy } from "../safety/approvals.js";
 import { secretsRedactor } from "../safety/redact.js";
-import { createNonce, UNTRUSTED_RULES, wrapUntrusted } from "../safety/untrusted.js";
+import { createNonce, neutraliseDelimiters, UNTRUSTED_RULES, wrapUntrusted } from "../safety/untrusted.js";
 import { ToolRegistry } from "../tools/registry.js";
 import {
   AgentOffError,
@@ -549,7 +549,10 @@ export async function runAgentWith(
           await recordTaint();
           // No room for the wrapper: the child's text is left out (the parent is tainted all the same).
           if (limit < 1) return "(The sub-agent's report does not fit in maxToolOutputChars, so it is left out.)";
-          return wrapUntrusted(truncate(prefix + (result.text || "(no final text)"), limit), { source: "delegate", nonce: createNonce() });
+          // Neutralise forged delimiters first: neutralising grows the text, so it must happen before the cut
+          // (wrapUntrusted's own pass is then a no-op).
+          const body = neutraliseDelimiters(prefix + (result.text || "(no final text)"));
+          return wrapUntrusted(truncate(body, limit), { source: "delegate", nonce: createNonce() });
         }
         return truncate(prefix + (result.text || "(no final text)"), DELEGATE_RESULT_CHARS);
       };
@@ -727,6 +730,9 @@ export async function runAgentWith(
   state.end = end;
   if (options.taintReport) options.taintReport.tainted = state.tainted;
   await recordTaint();
+  // Check the row once more: a concurrent write of the session's meta may have dropped the flag since it was
+  // recorded (markSessionTainted writes only when the flag is missing, and never moves taintedAt).
+  if (state.tainted) await markSessionTainted(storage, state.sessionId, now());
   const status = end === "error" ? "error" : end === "aborted" ? "aborted" : "done";
   await storage.sessions.update(state.sessionId, { status, endedAt: now().toISOString(), counters: state.counters });
   return {
@@ -763,14 +769,18 @@ async function openSession(
     const history = rebuildHistory(records);
     const attended = input.attended ?? existing.attended;
     const patch: Partial<Pick<SessionRecord, "status" | "endedAt" | "meta">> = { status: "running", endedAt: null };
+    // Re-read right before the write: another run of the session may have changed its meta (a taint flag) while the
+    // messages were read, and meta is replaced whole.
+    const fresh = (await storage.sessions.get(existing.id)) ?? existing;
     // An unattended run of the session is recorded on the row once (never cleared), even when the row says attended.
-    if (!attended && !sessionMarkedUnattended(existing)) {
-      patch.meta = { ...existing.meta, [UNATTENDED_META_KEY]: true, [UNATTENDED_AT_META_KEY]: (deps.now ?? (() => new Date()))().toISOString() };
+    if (!attended && !sessionMarkedUnattended(fresh)) {
+      patch.meta = { ...fresh.meta, [UNATTENDED_META_KEY]: true, [UNATTENDED_AT_META_KEY]: (deps.now ?? (() => new Date()))().toISOString() };
     }
-    const updated = (await storage.sessions.update(existing.id, patch)) ?? existing;
-    // Untrusted text from an earlier run: the flag, or a wrapper in ANY stored message of the session (also before a
-    // compression marker: a summary may carry what the page said), the same test as the post-session review.
-    const tainted = isSessionTainted(updated, records);
+    const updated = (await storage.sessions.update(existing.id, patch)) ?? fresh;
+    // Untrusted text from an earlier run: the flag (in any read of the row), or a wrapper in ANY stored message of
+    // the session (also before a compression marker: a summary may carry what the page said), the same test as the
+    // post-session review.
+    const tainted = isSessionTainted(updated, records) || sessionMarkedTainted(existing) || sessionMarkedTainted(fresh);
     return { session: updated, history, attended, tainted };
   }
   const kind: SessionKind = input.kind ?? "chat";

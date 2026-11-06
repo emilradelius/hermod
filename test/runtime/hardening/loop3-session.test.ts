@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 import {
   UNATTENDED_AT_META_KEY,
   UNATTENDED_META_KEY,
+  markSessionTainted,
   runAgent,
   sessionMarkedUnattended,
 } from "../../../src/loop/index.js";
@@ -66,5 +67,34 @@ describe("R7 (loop): unattended runs are recorded on the session row", () => {
     await storage.sessions.update(job.sessionId, { meta: {} });
     await runAgent(baseConfig(), { sessionId: job.sessionId, userMessage: "again" }, deps);
     expect(sessionMarkedUnattended(await storage.sessions.get(job.sessionId))).toBe(true);
+  });
+});
+
+describe("round 3 verify: an unattended continuation never drops a taint flag another run records meanwhile", () => {
+  it("keeps meta.tainted that a concurrent run wrote while openSession read the messages", async () => {
+    const storage = await setup("autonomous");
+    const deps = { storage, model: new FakeModelClient([textMessage("Hi.")]), sleep: noSleep, now: () => FIXED_NOW };
+    const first = await runAgent(baseConfig(), { userMessage: "hello" }, deps);
+    // While the continued run lists the messages, another run of the same session records its taint (its untrusted
+    // text is in no stored message, so only the flag says so).
+    const realList = storage.messages.list.bind(storage.messages);
+    let raced = false;
+    storage.messages.list = async (...args: Parameters<typeof realList>) => {
+      const out = await realList(...args);
+      if (!raced) {
+        raced = true;
+        await markSessionTainted(storage, first.sessionId, LATER);
+      }
+      return out;
+    };
+    await runAgent(
+      baseConfig(),
+      { userMessage: "digest", sessionId: first.sessionId, attended: false },
+      { storage, model: new FakeModelClient([textMessage("Done.")]), sleep: noSleep, now: () => LATER },
+    );
+    expect(raced).toBe(true);
+    const row = await storage.sessions.get(first.sessionId);
+    expect(row?.meta.tainted).toBe(true);
+    expect(row?.meta.unattendedRun).toBe(true);
   });
 });

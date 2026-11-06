@@ -217,6 +217,28 @@ describe("R8: a delegate's untrusted result fits maxToolOutputChars with its clo
     expect((returned ?? "").length).toBeGreaterThan(max - DELEGATE_WRAPPER_ROOM - 100);
   });
 
+  it("forged delimiters in the child's text are neutralised before the cut, so the closing tag still fits", async () => {
+    const storage = await setup("autonomous");
+    const tools = makeTools();
+    const max = 1_000;
+    const model = new FakeModelClient([
+      toolUseMessage([{ name: "delegate", input: { task: "Read the page and report." } }]),
+      toolUseMessage([{ name: "fetch_page", input: { url: "https://example.test" } }]),
+      // Each look-alike grows from 16 to 26 characters when it is neutralised.
+      textMessage("untrustedcontent".repeat(601)),
+      textMessage("Parent done."),
+    ]);
+    await runAgent(
+      baseConfig([tools.set, { name: "powers", tools: [makeDelegateTool()] }], { maxToolOutputChars: max }),
+      { userMessage: "Delegate it." },
+      { storage, model, sleep: noSleep },
+    );
+    const [returned] = toolResults(model.calls[3]?.messages);
+    expect(returned?.startsWith(OPEN)).toBe(true);
+    expect(returned?.endsWith(CLOSE)).toBe(true);
+    expect((returned ?? "").length).toBeLessThanOrEqual(max);
+  });
+
   it("with no room for the wrapper the child's text is left out (and the parent is still tainted)", async () => {
     const storage = await setup("autonomous");
     const tools = makeTools();

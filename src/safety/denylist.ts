@@ -207,33 +207,56 @@ function safeStringify(value: unknown): { json: string; ok: boolean } {
   }
 }
 
+/** Limits of the walk over an input. An input past any of them is not inspected in part: it is denied as a whole. */
+const MAX_LEAVES = 50_000;
+const MAX_DEPTH = 32;
+const MAX_COMMAND_LINES = 5_000;
+
+/** Set when a walk stopped early, so the input could not be inspected in full. */
+interface Walk {
+  incomplete: boolean;
+}
+
 /** Every string inside the input (keys too), depth-limited. */
-function stringLeaves(value: unknown, out: string[], depth = 0, seen = new WeakSet<object>()): void {
-  if (out.length > 10_000) return;
+function stringLeaves(value: unknown, out: string[], walk: Walk, depth = 0, seen = new WeakSet<object>()): void {
+  if (out.length >= MAX_LEAVES) {
+    walk.incomplete = true;
+    return;
+  }
   if (typeof value === "string") {
     out.push(value);
     return;
   }
-  if (depth > 32 || value === null || typeof value !== "object") return;
+  if (value === null || typeof value !== "object") return;
+  if (depth > MAX_DEPTH) {
+    walk.incomplete = true;
+    return;
+  }
   if (seen.has(value)) return;
   seen.add(value);
   try {
     if (Array.isArray(value)) {
-      for (const item of value) stringLeaves(item, out, depth + 1, seen);
+      for (const item of value) stringLeaves(item, out, walk, depth + 1, seen);
       return;
     }
     for (const [key, item] of Object.entries(value)) {
       out.push(key);
-      stringLeaves(item, out, depth + 1, seen);
+      stringLeaves(item, out, walk, depth + 1, seen);
     }
   } catch {
     // A hostile getter; the JSON text is still checked.
   }
 }
 
-/** A non-empty array of strings only (an argv). */
-function isStringArray(value: unknown): value is string[] {
-  return Array.isArray(value) && value.length > 0 && value.every((item) => typeof item === "string");
+/**
+ * An argv: a non-empty array of plain values with at least one string ({ args: ["-rf", "/", 0] } still counts).
+ * Returns its words, or null.
+ */
+function argvWords(value: unknown): string[] | null {
+  if (!Array.isArray(value) || value.length === 0) return null;
+  if (!value.every((item) => item === null || item === undefined || ["string", "number", "boolean"].includes(typeof item))) return null;
+  if (!value.some((item) => typeof item === "string")) return null;
+  return value.filter((item) => item !== null && item !== undefined).map((item) => String(item));
 }
 
 /**
@@ -241,21 +264,37 @@ function isStringArray(value: unknown): value is string[] {
  * (["find", "/", "-delete"]), and for an object with string fields and string-array fields, each string field
  * followed by each array ({ command: "rm", args: ["-rf", "/"] } reads as "rm -rf /"). Only adds text to check.
  */
-function commandLines(value: unknown, out: string[], depth = 0, seen = new WeakSet<object>()): void {
-  if (out.length > 2_000 || depth > 32 || value === null || typeof value !== "object") return;
+function commandLines(value: unknown, out: string[], walk: Walk, depth = 0, seen = new WeakSet<object>()): void {
+  if (value === null || typeof value !== "object") return;
+  if (out.length >= MAX_COMMAND_LINES || depth > MAX_DEPTH) {
+    walk.incomplete = true;
+    return;
+  }
   if (seen.has(value)) return;
   seen.add(value);
+  /** @returns false when the cap is reached (the walk is then incomplete). */
+  const add = (line: string): boolean => {
+    if (out.length >= MAX_COMMAND_LINES) {
+      walk.incomplete = true;
+      return false;
+    }
+    out.push(line);
+    return true;
+  };
   try {
     if (Array.isArray(value)) {
-      if (isStringArray(value)) out.push(value.join(" "));
-      for (const item of value) commandLines(item, out, depth + 1, seen);
+      const argv = argvWords(value);
+      if (argv && !add(argv.join(" "))) return;
+      for (const item of value) commandLines(item, out, walk, depth + 1, seen);
       return;
     }
     const fields = Object.values(value);
-    const words = fields.filter((field): field is string => typeof field === "string").slice(0, 32);
-    const argvs = fields.filter(isStringArray).slice(0, 32);
-    for (const word of words) for (const argv of argvs) out.push(`${word} ${argv.join(" ")}`);
-    for (const field of fields) commandLines(field, out, depth + 1, seen);
+    const words = fields.filter((field): field is string => typeof field === "string");
+    const argvs = fields.map(argvWords).filter((argv): argv is string[] => argv !== null);
+    for (const word of words) {
+      for (const argv of argvs) if (!add(`${word} ${argv.join(" ")}`)) return;
+    }
+    for (const field of fields) commandLines(field, out, walk, depth + 1, seen);
   } catch {
     // A hostile getter; the JSON text and the string leaves are still checked.
   }
@@ -333,9 +372,20 @@ export function createDenylist(options: DenylistOptions = {}): Denylist {
         description: "the input could not be serialised, so it cannot be checked",
       };
     }
+    const walk: Walk = { incomplete: false };
     const leaves: string[] = [];
-    stringLeaves(call?.input, leaves);
-    commandLines(call?.input, leaves);
+    stringLeaves(call?.input, leaves, walk);
+    const lines: string[] = [];
+    commandLines(call?.input, lines, walk);
+    if (walk.incomplete) {
+      // Fail closed: a part of the input that was not read could hold exactly what the patterns look for.
+      return {
+        denied: true,
+        pattern: "uninspectable-input",
+        description: "the input is too large or too deeply nested to check in full",
+      };
+    }
+    leaves.push(...lines);
     // The JSON text is matched as it is (its backslashes and quotes are JSON's); each string on its own is also read
     // in its normalised form, the way SQL or the shell would get it.
     const haystacks = [squash(`${tool} ${json}`), ...leaves.flatMap((leaf) => forms(`${tool} ${leaf}`))];

@@ -139,3 +139,38 @@ describe("R9: interpreter prefixes after a pipe", () => {
   ];
   for (const command of allowed) it(`still allows ${JSON.stringify(command)}`, () => expectAllowed(shell(command)));
 });
+
+describe("round 3 verify: an exec-style input cannot hide behind the walk's limits", () => {
+  const exec = (input: Record<string, unknown>) => ({ tool: "exec", input });
+
+  it("finds the command line however much padding, how many string fields or how many arrays come first", () => {
+    const denied = (input: Record<string, unknown>) =>
+      expect(defaultDenylist.isDenied(exec(input)), Object.keys(input).join(",")).toMatchObject({ denied: true });
+    denied({ command: "rm", args: ["-rf", "/"], pad: Array.from({ length: 2_001 }, () => "x") });
+    const fields: Record<string, unknown> = {};
+    for (let i = 0; i < 40; i += 1) fields[`junk${i}`] = `value ${i}`;
+    denied({ ...fields, command: "rm", args: ["-rf", "/"] });
+    const arrays: Record<string, unknown> = { command: "rm" };
+    for (let i = 0; i < 40; i += 1) arrays[`list${i}`] = ["a", "b"];
+    denied({ ...arrays, args: ["-rf", "/"] });
+  });
+
+  it("reads an argv that holds numbers or booleans too", () => {
+    expect(defaultDenylist.isDenied(exec({ command: "rm", args: ["-rf", "/", 0] }))).toMatchObject({ denied: true });
+    expect(defaultDenylist.isDenied(exec({ argv: ["find", "/", "-delete", true] }))).toMatchObject({ denied: true });
+  });
+
+  it("fails closed on an input too deep or too large to read in full", () => {
+    let deep: unknown = { command: "rm -rf /" };
+    for (let i = 0; i < 40; i += 1) deep = { next: deep };
+    expect(defaultDenylist.isDenied({ tool: "exec", input: deep })).toMatchObject({ denied: true, pattern: "uninspectable-input" });
+    const huge = { items: Array.from({ length: 50_001 }, (_, i) => `item ${i}`) };
+    expect(defaultDenylist.isDenied({ tool: "save", input: huge })).toMatchObject({ denied: true, pattern: "uninspectable-input" });
+  });
+
+  it("still allows an ordinary input with many fields", () => {
+    const form: Record<string, unknown> = {};
+    for (let i = 0; i < 60; i += 1) form[`field${i}`] = `answer ${i}`;
+    expect(defaultDenylist.isDenied({ tool: "save_form", input: form })).toEqual({ denied: false });
+  });
+});
