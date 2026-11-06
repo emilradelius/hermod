@@ -11,8 +11,12 @@ not done or not verified, and one line per recent session. Each decision is one 
   memory, skills and proposals with grounding, learning (review, triggers, curator), modes, scheduler, channels,
   the invariant suites and the eval harness. `docs/runtime.md`.
 - **Three rounds of independent attacks** on the guards (taint, memory writes, side effects, costs, modes): every
-  finding is fixed with mutation-checked tests. Whole suite with Postgres: 87 files, 2,538 tests; evals 19/19; CI
-  green.
+  finding is fixed with mutation-checked tests.
+- **Reviews:** `/code-review` (max) found 14 problems, all fixed (job leases, unpriced costs, the redaction default,
+  backoff, compression in a tool loop, skill patch races, the curator writing on its own, stray files in a vendored
+  build, multi-line imports, floating CI versions, `.env.example`, two speed-ups, a duplicate helper), and an
+  independent verifier re-checked the runtime fixes. `/security-review`: no high-confidence vulnerabilities.
+- Whole suite with Postgres: 93 files, 2,597 tests; evals 19/19; CI green.
 - **Installed**, each as a draft pull request: life#1 (kit), life#2 (the Brain module on the vendored runtime,
   stacked on #1), J-E-App-building-#7 (kit), smartbox-backbone#91 (kit, and the agent plan for Emil's approval).
 
