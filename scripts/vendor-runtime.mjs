@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 // @ts-check
 /**
- * Copies a pinned build of the Hermod runtime into an app, for example life's `vendor/hermod/`.
+ * Copies a pinned build of the Hermod runtime into an app, for example its `vendor/hermod/` folder.
  *
- *   node scripts/vendor-runtime.mjs --target ../life/vendor/hermod --ref <tag | full commit sha> [--dry-run]
+ *   node scripts/vendor-runtime.mjs --target ../my-app/vendor/hermod --ref <tag | full commit sha> [--dry-run]
  *
  * Pinned and reviewable, like scripts/sync.mjs:
  * - the ref must be a tag or a full 40-character commit sha (branch names and short shas move);
