@@ -8,5 +8,5 @@
     "noUncheckedIndexedAccess": false,
     "noEmit": true
   },
-  "include": ["kit/files/.claude/hermod/**/*.mjs", "scripts/**/*.mjs"]
+  "include": ["kit/files/.claude/hermod/**/*.mjs", "scripts/**/*.mjs", ".claude/hermod/checks/*.mjs"]
 }

@@ -50,3 +50,7 @@ jobs:
       - run: npm run eval
       - name: Kit validates itself
         run: node kit/files/.claude/hermod/validate.mjs --root . --kit
+      - name: This repository's own lessons and checks
+        run: |
+          node kit/files/.claude/hermod/validate.mjs --root .
+          node kit/files/.claude/hermod/check.mjs --root . --self-test

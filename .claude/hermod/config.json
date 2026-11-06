@@ -1,0 +1,41 @@
+{
+  "version": 1,
+  "brief": {
+    "budgetChars": 8000,
+    "progress": { "file": "docs/PROGRESS.md", "sections": ["Status", "Next step"], "maxCharsPerSection": 2500 },
+    "includeLessons": true,
+    "includeSkills": true,
+    "includeGit": true,
+    "maxBranches": 6,
+    "extra": []
+  },
+  "lessons": { "file": ".claude/hermod/LESSONS.md", "capChars": 4000, "maxEntryChars": 400 },
+  "skills": { "dir": "kit/files/.claude/skills", "indexChars": 60 },
+  "ritual": {
+    "enabled": true,
+    "codePaths": ["src/", "kit/", "scripts/", "test/", "evals/", "package.json", ".github/"],
+    "ignorePaths": [".claude/", "docs/", "**/*.md"],
+    "require": [{ "path": "docs/PROGRESS.md", "why": "Status, Next step, Open questions, Not done" }],
+    "remind": ["docs/decisions.md: one line for each new decision"],
+    "runChecks": true,
+    "validateKnowledge": true,
+    "maxBlocksPerSession": 2
+  },
+  "ledger": { "enabled": true, "maxOutputChars": 2000, "maxFileBytes": 2000000, "extraRedactPatterns": [] },
+  "recall": {
+    "sources": ["docs/PROGRESS.md", "docs/decisions.md", "docs/research.md", "docs/kit.md", "docs/runtime.md"],
+    "git": true,
+    "gitMaxCommits": 3000,
+    "limit": 8,
+    "snippetChars": 240
+  },
+  "checks": { "dir": ".claude/hermod/checks", "base": "auto" },
+  "curator": {
+    "staleDays": 14,
+    "archiveDays": 30,
+    "pinned": ["reflect", "curate"],
+    "maxSkillLines": 500,
+    "maxSkillChars": 20000,
+    "overlapThreshold": 0.55
+  }
+}
