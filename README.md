@@ -41,6 +41,9 @@ app, on your own hosting, with your data in your own database:
   untrusted-content wrapping, injection scan, a hard denylist, sub-agents with blocked tools);
 - an eval harness with a fake model, so tests never cost money.
 
+Untrusted text taints a session for good, and outside text is untrusted unless the app says otherwise; cost caps
+bound the output of every call. Details: [`docs/runtime.md`](docs/runtime.md).
+
 ## What Hermod is not
 
 - **Not a self-improving agent.** It never changes its own instructions, skills, hooks or memory on its own. The one
