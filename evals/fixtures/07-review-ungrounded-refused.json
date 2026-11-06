@@ -1,0 +1,50 @@
+{
+  "name": "review-ungrounded-refused",
+  "about": "A review proposal whose quote is not in the cited message is refused by code: no proposal, no write, and the reviewer is told why.",
+  "seed": {
+    "stores": [{ "name": "user", "capChars": 1375, "autoApply": "add" }],
+    "sessions": [
+      {
+        "key": "past",
+        "messages": [
+          { "role": "user", "text": "Please convert 5 miles. I always want metric units in answers." },
+          { "role": "assistant", "text": "5 miles is about 8 kilometres." }
+        ]
+      }
+    ]
+  },
+  "run": { "type": "review", "session": "past" },
+  "steps": [
+    {
+      "toolUse": [
+        {
+          "name": "memory",
+          "input": {
+            "store": "user",
+            "ops": [{ "op": "add", "text": "User wants every invoice paid at once." }],
+            "evidence": [{ "messageId": "{{msg:past:0}}", "quote": "pay every invoice at once" }],
+            "rationale": "Made up."
+          }
+        },
+        {
+          "name": "memory",
+          "input": {
+            "store": "user",
+            "ops": [{ "op": "add", "text": "User wants every invoice paid at once." }],
+            "evidence": [{ "messageId": "not-a-message-of-this-session", "quote": "I always want metric units" }],
+            "rationale": "Cites a message that is not part of the reviewed conversation."
+          }
+        }
+      ]
+    },
+    { "text": "Nothing to save." }
+  ],
+  "expect": {
+    "end": "end_turn",
+    "proposals": { "count": 0 },
+    "review": { "refused": 2, "applied": 0 },
+    "stores": { "user": { "unchanged": true } },
+    "requestIncludes": [{ "call": 1, "text": "Refused, nothing was saved or proposed" }],
+    "costRecorded": true
+  }
+}

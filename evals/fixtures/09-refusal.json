@@ -1,0 +1,15 @@
+{
+  "name": "refusal",
+  "about": "A refusal (stop_reason refusal) ends the run with its category; the tool calls of that turn never run.",
+  "run": { "type": "chat", "userMessage": "Write something harmful." },
+  "steps": [{ "refusal": "cyber" }],
+  "expect": {
+    "end": "refusal",
+    "refusalCategory": "cyber",
+    "modelCalls": 1,
+    "toolCalls": [],
+    "ran": [],
+    "proposals": { "count": 0 },
+    "costRecorded": true
+  }
+}

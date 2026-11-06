@@ -1,0 +1,18 @@
+{
+  "name": "memory-write-proposal",
+  "about": "The memory tool on a store without add-only writes: a pending proposal, the store is unchanged, the model is told it waits for approval.",
+  "seed": { "stores": [{ "name": "user", "capChars": 1375, "autoApply": "none", "entries": ["User works in Stockholm."] }] },
+  "run": { "type": "chat", "userMessage": "I always want metric units." },
+  "steps": [
+    { "toolUse": [{ "name": "memory", "input": { "store": "user", "ops": [{ "op": "add", "text": "User wants metric units." }] } }] },
+    { "text": "Noted; I proposed saving that." }
+  ],
+  "expect": {
+    "end": "end_turn",
+    "toolCalls": [["memory", "allow"]],
+    "proposals": { "count": 1, "kinds": ["memory"], "statuses": ["pending"], "targets": ["user"], "shadow": [false] },
+    "stores": { "user": { "unchanged": true } },
+    "requestIncludes": [{ "call": 1, "text": "waiting for approval" }],
+    "costRecorded": true
+  }
+}

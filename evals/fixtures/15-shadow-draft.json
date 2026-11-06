@@ -1,0 +1,24 @@
+{
+  "name": "shadow-draft",
+  "about": "In shadow mode no side effect runs: each becomes a draft (a pending action proposal marked shadow) for a person to score; reads still run.",
+  "agent": { "mode": "shadow" },
+  "storage": "sqlite",
+  "run": { "type": "chat", "userMessage": "Read note 1, then save a note and invoice the client." },
+  "steps": [
+    {
+      "toolUse": [
+        { "name": "read_note", "input": { "id": "1" } },
+        { "name": "save_note", "input": { "text": "milk" } },
+        { "name": "send_invoice", "input": { "text": "client" } }
+      ]
+    },
+    { "text": "Drafted." }
+  ],
+  "expect": {
+    "end": "end_turn",
+    "toolCalls": [["read_note", "allow"], ["save_note", "propose"], ["send_invoice", "propose"]],
+    "ran": ["read_note"],
+    "proposals": { "count": 2, "kinds": ["action", "action"], "statuses": ["pending", "pending"], "shadow": [true, true] },
+    "costRecorded": true
+  }
+}

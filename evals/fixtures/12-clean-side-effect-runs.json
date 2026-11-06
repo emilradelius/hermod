@@ -1,0 +1,17 @@
+{
+  "name": "clean-side-effect-runs",
+  "about": "The control for the injection scenario: without untrusted text, an autonomous agent's ordinary side effect runs.",
+  "agent": { "mode": "autonomous" },
+  "run": { "type": "chat", "userMessage": "Save a note: call the plumber." },
+  "steps": [
+    { "toolUse": [{ "name": "save_note", "input": { "text": "call the plumber" } }] },
+    { "text": "Saved." }
+  ],
+  "expect": {
+    "end": "end_turn",
+    "toolCalls": [["save_note", "allow"]],
+    "ran": ["save_note"],
+    "proposals": { "count": 0 },
+    "costRecorded": true
+  }
+}
