@@ -438,10 +438,27 @@ describe("Stop hook: checks", () => {
     repo.write("docs/PROGRESS.md", "# Progress\nUpdated.\n");
     passed(stop(repo));
 
-    const repo2 = repoWithCheck("always.mjs", failing);
+    // In a docs-only session a check runs only when its `when` list matches a changed file.
+    const codeOnly = custom("code-only", "error", 'return { ok: false, message: "code check ran" };').replace(
+      'level: "error",',
+      'level: "error", when: ["src/"],',
+    );
+    const repo2 = repoWithCheck("code-only.mjs", codeOnly);
     startSession(repo2);
     repo2.write("docs/notes.md", "docs only\n");
     passed(stop(repo2));
+  });
+
+  it("runs a check that guards docs in a docs-only session, and blocks once for it", () => {
+    const guard = custom("docs-guard", "error", 'return { ok: false, message: "the generated corpus is stale" };').replace(
+      'level: "error",',
+      'level: "error", when: ["docs/"],',
+    );
+    const repo = repoWithCheck("docs-guard.mjs", guard);
+    startSession(repo);
+    repo.write("docs/guide.md", "a guide\n");
+    expect(blocked(stop(repo))).toMatch(/- docs-guard: the generated corpus is stale/);
+    passed(stop(repo));
   });
 });
 

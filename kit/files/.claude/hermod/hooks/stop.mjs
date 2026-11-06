@@ -280,7 +280,9 @@ export async function decideStop(root, input) {
     }
   }
   if (ritual.validateKnowledge) reasons.push(...knowledgeReasons(root, config, changedFiles));
-  if (ritual.runChecks && codeFiles.length > 0) {
+  // Checks run whenever files changed: each check's own `when` list decides whether it applies, so a check that
+  // guards docs (a generated help corpus, conflict markers in a progress file) also runs in a docs-only session.
+  if (ritual.runChecks && changedFiles.length > 0) {
     const report = await runChecks(root, {
       dir: config.checks.dir,
       base: changes.base,
