@@ -54,3 +54,5 @@ jobs:
         run: |
           node kit/files/.claude/hermod/validate.mjs --root .
           node kit/files/.claude/hermod/check.mjs --root . --self-test
+          git fetch --no-tags --depth=1 origin main
+          node kit/files/.claude/hermod/check.mjs --root . --base FETCH_HEAD
