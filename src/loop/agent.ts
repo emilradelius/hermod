@@ -132,8 +132,6 @@ export const HERMOD_RULES = [
 export interface LoopDeps extends RunDeps {
   /** Memory snapshot, skills index and attached skill bodies. Default: storageKnowledge(storage). */
   knowledge?: KnowledgeSource;
-  /** Let the registry accept tools with the capability "messaging" (owner messages only). Default false. */
-  allowOwnerMessaging?: boolean;
 }
 
 /** The actor of the post-session review (learning/review.ts); its proposals belong to the review, not to a run. */
@@ -194,7 +192,7 @@ export async function runAgentWith(
   options: RunOptions,
 ): Promise<RunResult> {
   const settings = validate(config, input, deps);
-  const registry = new ToolRegistry(config.toolsets ?? [], { allowOwnerMessaging: deps.allowOwnerMessaging === true });
+  const registry = new ToolRegistry(config.toolsets ?? []);
   const { storage, model: client } = deps;
 
   // ── prepare ───────────────────────────────────────────────────────────────────────────────────────────────

@@ -36,7 +36,7 @@ function resultOf(messages: MessageParam[] | undefined, index: number): string {
   return JSON.stringify(messages?.[index]?.content ?? "");
 }
 
-async function scenario(tool: ToolDef, options: { allowOwnerMessaging?: boolean } = {}) {
+async function scenario(tool: ToolDef) {
   const storage = await setup("autonomous");
   const tools = makeTools();
   const model = new FakeModelClient([
@@ -47,7 +47,7 @@ async function scenario(tool: ToolDef, options: { allowOwnerMessaging?: boolean 
   const result = await runAgent(
     baseConfig([tools.set, { name: "outside", tools: [tool] }]),
     { userMessage: "notify the webhook" },
-    { storage, model, sleep: noSleep, allowOwnerMessaging: options.allowOwnerMessaging === true },
+    { storage, model, sleep: noSleep },
   );
   const session = await storage.sessions.get(result.sessionId);
   return { result, tools, model, session };
@@ -76,11 +76,9 @@ describe("F: output and errors of tools that reach outside the app are untrusted
     expect(session?.meta.tainted).toBe(true);
   });
 
-  it("a messaging tool (owner messages, opted in) counts as reaching outside as well", async () => {
-    const { result, tools, model } = await scenario(outsideTool({ capability: "messaging" }), { allowOwnerMessaging: true });
-    expect(resultOf(model.calls[1]?.messages, 2)).toContain(`<${UNTRUSTED_TAG}`);
-    expect(result.toolCalls.map((c) => c.decision)).toEqual(["allow", "propose"]);
-    expect(tools.executed).toEqual([]);
+  it("a messaging tool never reaches a run: runAgent refuses it before any tool runs", async () => {
+    // Its output would count as outside too (OUTSIDE_CAPABILITIES, below), but the registry refuses it first.
+    await expect(scenario(outsideTool({ capability: "messaging" }))).rejects.toThrow(/messaging/);
   });
 
   it("untrustedOutput: false, set explicitly, keeps the output unwrapped and the run clean", async () => {

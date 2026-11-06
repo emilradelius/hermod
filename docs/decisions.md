@@ -21,6 +21,9 @@ earlier one, change the old line to say "replaced by …" instead of deleting it
   skills or hooks is a reviewable diff in a pull request; the sync script edits only the entries it owns, and only
   when a person runs it.
 - 2026-11-05, Emil: AI output is a draft a person approves; the model never gets a tool that messages a customer.
+- 2026-11-06, Claude (from Emil's spec: "`send_message` is deliberately not a model-callable tool"): the registry
+  refuses every tool with the capability `messaging`; the `allowOwnerMessaging` opt-in is removed. A message to the
+  owner is delivered by application code through a channel, like every other message.
 - 2026-11-06, Claude (pending Emil, see Open questions in `docs/PROGRESS.md`): the built-in memory tool proposes
   even an add in an unattended run, and the post-session review writes an add-only batch directly only for a clean,
   attended conversation that quotes the person's own words and did not search other sessions.

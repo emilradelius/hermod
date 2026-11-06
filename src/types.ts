@@ -102,8 +102,8 @@ export type NewAgent = Pick<AgentRecord, "id" | "name"> &
  * - read: reads data, no side effects.
  * - memory.write / skills.write: changes knowledge (always through MemoryService / proposals).
  * - internal.write: changes the app's own data.  - external.write: changes something outside the app.
- * - messaging: sends a message to a person. No built-in tool has it; the registry refuses it unless the app opts
- *   in for messages to the owner only.  - scheduling: creates or changes jobs.  - delegation: runs a sub-agent.
+ * - messaging: sends a message to a person. The registry always refuses it: delivery is application code.
+ * - scheduling: creates or changes jobs.  - delegation: runs a sub-agent.
  */
 export type ToolCapability =
   | "read"

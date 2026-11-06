@@ -7,7 +7,7 @@
  *
  * 1. The learning loop only proposes.            5. Off means off; shadow runs no side effects; unattended denies.
  * 2. Caps hold.                                  6. Sub-agents cannot write memory, message, schedule or delegate.
- * 3. The snapshot is frozen.                     7. No built-in tool can message anyone.
+ * 3. The snapshot is frozen.                     7. No tool can message anyone (the registry refuses one).
  * 4. Untrusted text cannot trigger side effects.
  */
 import Database from "better-sqlite3";
@@ -88,6 +88,8 @@ interface World {
   knowledge: Toolset;
   notes: Toolset;
   powers: Toolset;
+  /** One messaging tool, which the registry must refuse wherever it is passed. */
+  messenger: Toolset;
   deps: LoopDeps;
   model: FakeModelClient;
   /** What fetch_page returns (hostile by default). */
@@ -158,8 +160,11 @@ async function world(
   };
   const powers: Toolset = {
     name: "powers",
-    tools: [sideEffect("text_owner", "messaging"), sideEffect("schedule_job", "scheduling"), makeDelegateTool()],
+    tools: [sideEffect("schedule_job", "scheduling"), makeDelegateTool()],
   };
+  // A messaging tool. No run may hold it: the registry refuses it (invariant 7). Other tests still let the model
+  // call "text_owner", and that call fails as an unknown tool.
+  const messenger: Toolset = { name: "messenger", tools: [sideEffect("text_owner", "messaging")] };
   const model = new FakeModelClient();
   return {
     storage,
@@ -170,6 +175,7 @@ async function world(
     knowledge: knowledgeToolset({ memory, skills, proposals, storage }),
     notes,
     powers,
+    messenger,
     model,
     page,
     deps: { storage, model, sleep: noSleep, knowledge: knowledgeDeps({ memory, skills }) },
@@ -236,7 +242,6 @@ function jobRunner(w: World, overrides: Partial<AgentConfig> = {}) {
     model: w.model,
     sleep: noSleep,
     knowledge: knowledgeDeps({ memory: w.memory, skills: w.skills }),
-    allowOwnerMessaging: true,
     configFor: () => config(w, { toolsets: [w.knowledge, w.notes, w.powers], ...overrides }),
   });
 }
@@ -1180,7 +1185,6 @@ describe("invariant 6: sub-agents cannot write memory, message, schedule or dele
       { userMessage: "Find out about note 7." },
       {
         ...w.deps,
-        allowOwnerMessaging: true,
         model: w.model.push(
           toolUseMessage([{ name: "delegate", input: { task: "Read note 7 and report." } }]),
           // The child tries everything it must not have.
@@ -1199,7 +1203,9 @@ describe("invariant 6: sub-agents cannot write memory, message, schedule or dele
     );
     expect(result.end).toBe("end_turn");
     const parentTools = w.model.calls[0]?.tools?.map((t) => t.name) ?? [];
-    expect(parentTools).toEqual(expect.arrayContaining(["memory", "skill_propose", "text_owner", "schedule_job", "delegate"]));
+    expect(parentTools).toEqual(expect.arrayContaining(["memory", "skill_propose", "schedule_job", "delegate"]));
+    // No messaging tool exists at all, not even for the parent (invariant 7).
+    expect(parentTools).not.toContain("text_owner");
     const childTools = w.model.calls[1]?.tools?.map((t) => t.name) ?? [];
     expect(w.model.calls[1]?.purpose).toBe("delegate");
     for (const forbidden of ["memory", "skill_propose", "text_owner", "schedule_job", "delegate"]) expect(childTools).not.toContain(forbidden);
@@ -1234,7 +1240,7 @@ describe("invariant 6: sub-agents cannot write memory, message, schedule or dele
     }
   });
 
-  it("scheduled runs never get messaging, scheduling or delegation tools, even when the app allows owner messaging", async () => {
+  it("scheduled runs never get messaging, scheduling or delegation tools", async () => {
     const w = await world({ mode: "autonomous" });
     w.model.push(
       toolUseMessage([
@@ -1255,7 +1261,7 @@ describe("invariant 6: sub-agents cannot write memory, message, schedule or dele
 
 // ═══ 7. No built-in tool can message anyone ══════════════════════════════════════════════════════════════════
 
-describe("invariant 7: no built-in tool can message anyone", () => {
+describe("invariant 7: no tool can message anyone", () => {
   const storage = createMemoryStorage();
   const memory = new MemoryService({ storage });
   const skills = new SkillService({ storage });
@@ -1278,7 +1284,7 @@ describe("invariant 7: no built-in tool can message anyone", () => {
     expect(() => new ToolRegistry([{ name: "knowledge", tools: knowledgeToolset({ memory, skills, proposals, storage }).tools }])).not.toThrow();
   });
 
-  it("the registry refuses a messaging tool unless the app opts in, however it is dressed up", () => {
+  it("the registry refuses a messaging tool however it is dressed up, and no option lets one in", () => {
     const messaging = (extra: Partial<ToolDef>): ToolDef =>
       ({
         name: "notify",
@@ -1298,18 +1304,38 @@ describe("invariant 7: no built-in tool can message anyone", () => {
     ]) {
       expect(() => new ToolRegistry([{ name: "x", tools: [tool] }]), JSON.stringify(tool.capabilities)).toThrow(TypeError);
     }
-    const allowed = new ToolRegistry([{ name: "x", tools: [messaging({})] }], { allowOwnerMessaging: true });
-    expect(allowed.names()).toEqual(["notify"]);
-    expect(allowed.without(["messaging"]).names()).toEqual([]);
+    // There is no opt-in: an options object such as the removed { allowOwnerMessaging: true } changes nothing.
+    const Registry = ToolRegistry as unknown as new (sets: unknown, options?: unknown) => ToolRegistry;
+    expect(() => new Registry([{ name: "x", tools: [messaging({})] }], { allowOwnerMessaging: true })).toThrow(/messaging/);
   });
 
-  it("runAgent with a messaging tool and no opt-in fails before any model call or storage write", async () => {
+  it("runAgent with a messaging tool fails before any model call or storage write, whatever the deps say", async () => {
     const base = await world({ mode: "autonomous" });
+    for (const extra of [{}, { allowOwnerMessaging: true }]) {
+      const { storage: counted, writes } = countingStorage(base.storage);
+      const model = new FakeModelClient([textMessage("never")]);
+      const deps = { storage: counted, model, sleep: noSleep, ...extra } as LoopDeps;
+      await expect(
+        runAgent(config(base, { toolsets: [base.notes, base.messenger] }), { userMessage: "Text the customer." }, deps),
+      ).rejects.toThrow(/messaging/);
+      expect(model.calls).toHaveLength(0);
+      expect(writes).toEqual([]);
+    }
+  });
+
+  it("a scheduled run whose config holds a messaging tool fails before any model call or storage write", async () => {
+    const base = await world({ mode: "autonomous" });
+    const scheduled = await job(base.storage);
     const { storage: counted, writes } = countingStorage(base.storage);
     const model = new FakeModelClient([textMessage("never")]);
-    await expect(
-      runAgent(config(base, { toolsets: [base.notes, base.powers] }), { userMessage: "Text the customer." }, { storage: counted, model, sleep: noSleep }),
-    ).rejects.toThrow(/messaging/);
+    const runner = makeJobRunner({
+      storage: counted,
+      model,
+      sleep: noSleep,
+      allowOwnerMessaging: true,
+      configFor: () => config(base, { toolsets: [base.notes, base.messenger] }),
+    } as Parameters<typeof makeJobRunner>[0]);
+    await expect(runner(scheduled, jobCtx())).rejects.toThrow(/messaging/);
     expect(model.calls).toHaveLength(0);
     expect(writes).toEqual([]);
   });

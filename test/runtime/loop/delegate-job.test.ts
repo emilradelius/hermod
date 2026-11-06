@@ -28,7 +28,7 @@ function everything(): { set: Toolset; extra: Toolset; tools: ReturnType<typeof 
       tools: [
         capTool("remember", "memory.write"),
         capTool("learn_skill", "skills.write"),
-        capTool("text_owner", "messaging"),
+        // No messaging tool: the registry refuses one (invariant 7), so no run can hold it to begin with.
         capTool("schedule_job", "scheduling"),
         makeDelegateTool(),
       ],
@@ -54,12 +54,12 @@ describe("delegate tool", () => {
     const result = await runAgent(
       baseConfig([set, extra], { budget: { maxCostUsd: 1 } }),
       { userMessage: "delegate it" },
-      { storage, model, sleep: noSleep, allowOwnerMessaging: true },
+      { storage, model, sleep: noSleep },
     );
     expect(result.end).toBe("end_turn");
     const parentTools = model.calls[0]?.tools?.map((t) => t.name);
     expect(parentTools).toContain("remember");
-    expect(parentTools).toContain("text_owner");
+    expect(parentTools).not.toContain("text_owner");
     const childCall = model.calls[1];
     expect(childCall?.purpose).toBe("delegate");
     expect(childCall?.tools?.map((t) => t.name)).toEqual(["fetch_page", "flaky", "read_a", "read_b", "read_c", "save_note"]);
@@ -90,7 +90,7 @@ describe("delegate tool", () => {
     for (let i = 0; i < 20; i += 1) model.push(toolUseMessage([{ name: "read_a", input: { id: String(i) } }]));
     model.push(textMessage("Parent done."));
     // Parent cap 0.02; after its first call ($0.006) the child gets half of $0.014 = $0.007: room for one call.
-    const result = await runAgent(baseConfig([set, extra], { budget: { maxCostUsd: 0.02 } }), { userMessage: "go" }, { storage, model, sleep: noSleep, allowOwnerMessaging: true });
+    const result = await runAgent(baseConfig([set, extra], { budget: { maxCostUsd: 0.02 } }), { userMessage: "go" }, { storage, model, sleep: noSleep });
     const child = (await storage.sessions.listByAgent(AGENT)).find((s) => s.kind === "delegate");
     const childCosts = await storage.costs.list({ sessionId: child?.id ?? "" });
     expect(childCosts.length).toBe(1);
@@ -117,7 +117,7 @@ describe("delegate tool", () => {
       textMessage("child done"),
       textMessage("parent done"),
     ]);
-    await runAgent(baseConfig([set, extra], { approvals }), { userMessage: "read the page" }, { storage, model, sleep: noSleep, allowOwnerMessaging: true });
+    await runAgent(baseConfig([set, extra], { approvals }), { userMessage: "read the page" }, { storage, model, sleep: noSleep });
     expect(tools.executed).toEqual(["fetch_page"]);
     const proposals = await storage.proposals.list({ kind: "action" });
     expect(proposals.map((p) => p.target)).toEqual(["save_note"]);
@@ -133,7 +133,7 @@ describe("delegate tool", () => {
       toolUseMessage([{ name: "save_note", input: { text: "pwned" } }]),
       textMessage("parent done"),
     ]);
-    const result = await runAgent(baseConfig([set, extra]), { userMessage: "delegate" }, { storage, model, sleep: noSleep, allowOwnerMessaging: true });
+    const result = await runAgent(baseConfig([set, extra]), { userMessage: "delegate" }, { storage, model, sleep: noSleep });
     expect(lastResultText(model.calls[3]?.messages)).toContain('untrusted_content source=\\"delegate\\"');
     expect(tools.executed).toEqual(["fetch_page"]);
     expect(result.toolCalls.at(-1)?.decision).toBe("propose");
@@ -143,7 +143,7 @@ describe("delegate tool", () => {
     const storage = await setup("supervised");
     const { set, extra } = everything();
     const model = new FakeModelClient([toolUseMessage([{ name: "delegate", input: { task: "x" } }]), textMessage("ok")]);
-    const result = await runAgent(baseConfig([set, extra]), { userMessage: "go" }, { storage, model, sleep: noSleep, allowOwnerMessaging: true });
+    const result = await runAgent(baseConfig([set, extra]), { userMessage: "go" }, { storage, model, sleep: noSleep });
     expect(result.toolCalls[0]?.decision).toBe("propose");
     expect(model.calls).toHaveLength(2);
   });
@@ -175,7 +175,7 @@ describe("makeJobRunner", () => {
     const { storage, job } = await jobSetup();
     const { set, extra } = everything();
     const model = new FakeModelClient([textMessage("Brief one."), textMessage("Brief two.")]);
-    const runJob = makeJobRunner({ storage, model, sleep: noSleep, allowOwnerMessaging: true, configFor: () => baseConfig([set, extra]) });
+    const runJob = makeJobRunner({ storage, model, sleep: noSleep, configFor: () => baseConfig([set, extra]) });
     const signal = new AbortController().signal;
     const one = await runJob(job, { attended: false, now: new Date(), signal, context: "Weather: rain." });
     const two = await runJob(job, { attended: false, now: new Date(), signal });

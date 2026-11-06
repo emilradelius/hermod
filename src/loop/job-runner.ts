@@ -55,7 +55,7 @@ export function makeJobRunner(options: JobRunnerOptions): JobRunner {
     if (!base || base.agentId !== job.agentId) {
       throw new Error(`makeJobRunner: configFor(job) must return the config of agent "${job.agentId}".`);
     }
-    const registry = new ToolRegistry(base.toolsets ?? [], { allowOwnerMessaging: deps.allowOwnerMessaging === true });
+    const registry = new ToolRegistry(base.toolsets ?? []);
     const config: AgentConfig = {
       ...base,
       toolsets: registry.without(JOB_EXCLUDED_CAPABILITIES).toolsets(),

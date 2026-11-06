@@ -13,8 +13,8 @@ A TypeScript library for agents inside your own app, on your own hosting and dat
   is `zod` 4.6.7. Database drivers are optional peers.
 - **The agent only proposes.** Memory, skill and side-effect changes become proposals a person approves. The one
   exception: an add-only batch to a memory store whose owner set `autoApply: "add"`.
-- **No messaging tool.** No built-in tool messages anyone; the registry refuses a `messaging` tool unless the app
-  sets `allowOwnerMessaging` (owner only). Delivery is application code.
+- **No messaging tool.** The registry refuses every tool with the capability `messaging`, with no opt-in, and no
+  built-in tool has it. Delivery is application code, through a channel.
 - **No autonomy by default.** A new agent starts in `shadow` (`AGENT_DEFAULTS`). Only a person changes the mode.
 - **Not a sandbox.** Tools run in the app's process. The runtime decides whether a call runs, not what it can reach.
 

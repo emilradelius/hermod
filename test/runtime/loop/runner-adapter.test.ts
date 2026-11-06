@@ -72,7 +72,7 @@ describe("toBetaZodTool (SDK Tool Runner adapter)", () => {
     expect(tools.executed).toEqual(["fetch_page"]);
   });
 
-  it("refuses a messaging tool unless allowed", () => {
+  it("refuses a messaging tool, whatever the options say", () => {
     const sms = defineTool({
       name: "sms",
       description: "Send an SMS. Use never.",
@@ -84,5 +84,8 @@ describe("toBetaZodTool (SDK Tool Runner adapter)", () => {
     expect(() => toBetaZodTool(sms, () => {
       throw new Error("never");
     })).toThrow(/messaging/);
+    expect(() => toBetaZodTool(sms, () => {
+      throw new Error("never");
+    }, { allowOwnerMessaging: true } as never)).toThrow(/messaging/);
   });
 });

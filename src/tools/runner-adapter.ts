@@ -43,8 +43,6 @@ export interface RunnerAdapterOptions {
    * session's stored taint is read before and recorded after every call (see above).
    */
   taint?: { tainted: boolean };
-  /** Allow a tool with the capability "messaging" (owner messages only). Default false. */
-  allowOwnerMessaging?: boolean;
 }
 
 let callCounter = 0;
@@ -93,8 +91,8 @@ export function toBetaZodTool(
   ctxFactory: () => ToolContext | Promise<ToolContext>,
   options: RunnerAdapterOptions = {},
 ): BetaRunnableTool<unknown> {
-  // Registering checks the tool (name, schema, capabilities; messaging refused unless allowed).
-  const registry = new ToolRegistry([{ name: "adapter", tools: [def] }], { allowOwnerMessaging: options.allowOwnerMessaging === true });
+  // Registering checks the tool (name, schema, capabilities; a messaging tool is refused).
+  const registry = new ToolRegistry([{ name: "adapter", tools: [def] }]);
   const tool = registry.get(def.name) as ToolDef;
   const approvals = options.approvals ?? createApprovalPolicy();
   const redactor = options.redactor ?? secretsRedactor;
@@ -157,6 +155,6 @@ export function toBetaZodTools(
   ctxFactory: () => ToolContext | Promise<ToolContext>,
   options: RunnerAdapterOptions = {},
 ): BetaRunnableTool<unknown>[] {
-  const shared = { ...options, taint: options.taint ?? { tainted: false }, allowOwnerMessaging: registry.allowOwnerMessaging };
+  const shared = { ...options, taint: options.taint ?? { tainted: false } };
   return registry.list().map((tool) => toBetaZodTool(tool, ctxFactory, shared));
 }

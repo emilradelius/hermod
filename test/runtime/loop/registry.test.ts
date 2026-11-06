@@ -78,14 +78,13 @@ describe("ToolRegistry", () => {
     expect(() => new ToolRegistry([{ name: "s", tools: [tool("x", ["read"], { input: z.string() as never })] }])).toThrow(/z\.object/);
   });
 
-  it("refuses a messaging tool unless the app opts in for owner messages", () => {
+  it("refuses every messaging tool; no option lets one in", () => {
     const sms = tool("send_sms", ["messaging"]);
     expect(() => new ToolRegistry([{ name: "s", tools: [sms] }])).toThrow(/messaging/);
     expect(() => new ToolRegistry([{ name: "s", tools: [tool("mixed", ["read", "messaging"], { readOnly: false })] }])).toThrow(/messaging/);
-    const allowed = new ToolRegistry([{ name: "s", tools: [sms] }], { allowOwnerMessaging: true });
-    expect(allowed.has("send_sms")).toBe(true);
-    // The opt-in carries over to derived registries; without() still removes it.
-    expect(allowed.without(["messaging"]).has("send_sms")).toBe(false);
+    // The removed { allowOwnerMessaging: true } option changes nothing.
+    const Registry = ToolRegistry as unknown as new (sets: unknown, options?: unknown) => ToolRegistry;
+    expect(() => new Registry([{ name: "s", tools: [sms] }], { allowOwnerMessaging: true })).toThrow(/messaging/);
   });
 
   it("without(capabilities) and only(toolsets) return new registries", () => {

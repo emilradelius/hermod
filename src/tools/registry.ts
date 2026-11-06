@@ -4,8 +4,8 @@
  * - Every tool is checked when it is registered (name, description, zod schema, run function, capabilities), and
  *   its JSON Schema is built then, so a bad tool fails at start-up, not in the middle of a conversation.
  * - Duplicate tool names (also across toolsets) and duplicate toolset names are refused.
- * - A tool with the capability "messaging" is refused unless the app opts in with `allowOwnerMessaging` (for
- *   messages to the owner only). No built-in tool has it.
+ * - A tool with the capability "messaging" is always refused: the model never gets a tool that sends a message
+ *   (send_message is deliberately not model-callable). Delivery is application code, through a channel.
  * - A tool that says it is read-only must have only the capability "read".
  * - Order is by tool name, so `toApiTools()` is byte-for-byte stable and the prompt cache stays warm.
  * - `without(capabilities)` gives a new registry without the tools that have any of them (sub-agents, scheduled
@@ -14,11 +14,6 @@
  */
 import type { ToolCapability, ToolDef, ToolParam, Toolset } from "../types.js";
 import { toolInputSchema } from "./define.js";
-
-export interface ToolRegistryOptions {
-  /** Allow tools with the capability "messaging" (messages to the owner only). Default false. */
-  allowOwnerMessaging?: boolean;
-}
 
 export const TOOL_NAME_PATTERN = /^[a-zA-Z0-9_-]{1,64}$/;
 const TOOLSET_NAME_PATTERN = /^[a-zA-Z0-9_.:-]{1,64}$/;
@@ -43,11 +38,9 @@ interface Entry {
 export class ToolRegistry {
   readonly #entries: ReadonlyMap<string, Entry>;
   readonly #toolsetOrder: readonly string[];
-  readonly #allowOwnerMessaging: boolean;
 
-  constructor(toolsets: readonly Toolset[] = [], options: ToolRegistryOptions = {}) {
+  constructor(toolsets: readonly Toolset[] = []) {
     if (!Array.isArray(toolsets)) throw new TypeError("ToolRegistry: toolsets must be an array of { name, tools }.");
-    this.#allowOwnerMessaging = options?.allowOwnerMessaging === true;
     const entries = new Map<string, Entry>();
     const order: string[] = [];
     for (const toolset of toolsets) {
@@ -55,7 +48,7 @@ export class ToolRegistry {
       if (order.includes(setName)) throw new TypeError(`ToolRegistry: the toolset name "${setName}" is used twice.`);
       order.push(setName);
       for (const raw of toolset.tools) {
-        const tool = checkTool(raw, setName, this.#allowOwnerMessaging);
+        const tool = checkTool(raw, setName);
         const existing = entries.get(tool.name);
         if (existing) {
           throw new TypeError(
@@ -73,10 +66,6 @@ export class ToolRegistry {
   /** The number of tools. */
   get size(): number {
     return this.#entries.size;
-  }
-
-  get allowOwnerMessaging(): boolean {
-    return this.#allowOwnerMessaging;
   }
 
   /** The tool with this exact name, or undefined. Own entries only ("constructor" or "__proto__" never match). */
@@ -132,7 +121,7 @@ export class ToolRegistry {
 
   #filter(keep: (tool: ToolDef) => boolean): ToolRegistry {
     const sets = this.toolsets().map((set) => ({ name: set.name, tools: set.tools.filter(keep) }));
-    return new ToolRegistry(sets, { allowOwnerMessaging: this.#allowOwnerMessaging });
+    return new ToolRegistry(sets);
   }
 }
 
@@ -150,7 +139,7 @@ function checkToolset(toolset: Toolset): string {
   return name;
 }
 
-function checkTool(raw: ToolDef, toolset: string, allowOwnerMessaging: boolean): ToolDef {
+function checkTool(raw: ToolDef, toolset: string): ToolDef {
   if (raw === null || typeof raw !== "object") throw new TypeError(`ToolRegistry: toolset "${toolset}" has a tool that is not an object.`);
   const name: unknown = raw.name;
   if (typeof name !== "string" || !TOOL_NAME_PATTERN.test(name)) {
@@ -178,10 +167,10 @@ function checkTool(raw: ToolDef, toolset: string, allowOwnerMessaging: boolean):
   if (raw.readOnly && capabilities.some((cap) => cap !== "read")) {
     throw new TypeError(`${where} says it is read-only but has the capabilities ${JSON.stringify(capabilities)}.`);
   }
-  if (capabilities.includes("messaging") && !allowOwnerMessaging) {
+  if (capabilities.includes("messaging")) {
     throw new TypeError(
       `${where} can send messages ("messaging"). Hermod never gives the model a messaging tool; delivery is done by ` +
-        "application code. Pass { allowOwnerMessaging: true } only for a tool that messages the owner.",
+        "application code, through a channel.",
     );
   }
   for (const flag of ["untrustedOutput", "requiresApproval"] as const) {
