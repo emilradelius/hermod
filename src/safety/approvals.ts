@@ -16,6 +16,11 @@
  *    unattended run never gets is an approval it would need right now: an autonomous call that needs approval, or
  *    one made after untrusted text, is denied (deny by default). The caller records denials in the audit log.
  *
+ * 3b. A knowledge tool (capabilities only "read", "memory.write" and/or "skills.write", not requiresApproval) → allow,
+ *    in every mode except off: it writes only through MemoryService / ProposalService, which create proposals unless
+ *    a store's owner allows add-only writes, and never apply directly in shadow mode or after untrusted text. Wrapping
+ *    it in a second "action" proposal would only hide the real proposal.
+ *
  * A tool is read-only only when it says so AND has no capability other than "read"; a tool that claims to be
  * read-only but declares a write, messaging, scheduling or delegation capability is treated as a side effect.
  */
@@ -36,6 +41,14 @@ const MODES = new Set(["off", "shadow", "supervised", "autonomous"]);
 
 function toolName(tool: ToolDef | undefined): string {
   return typeof tool?.name === "string" && tool.name !== "" ? tool.name : "(unnamed tool)";
+}
+
+const KNOWLEDGE_CAPABILITIES = new Set(["read", "memory.write", "skills.write"]);
+
+/** A tool that only reads and writes knowledge (memory, skills) through the proposal services. */
+function isKnowledgeTool(tool: ToolDef): boolean {
+  const caps = Array.isArray(tool.capabilities) ? tool.capabilities : [];
+  return caps.length > 0 && caps.every((c) => KNOWLEDGE_CAPABILITIES.has(c)) && caps.some((c) => c !== "read");
 }
 
 function isReadOnly(tool: ToolDef): boolean {
@@ -86,6 +99,12 @@ function decideSafely(ctx: ApprovalContext, denylists: readonly Denylist[]): Dec
 
   if (isReadOnly(ctx.tool) && !needsApproval) {
     return { decision: "allow", reason: `"${name}" is read-only, so it runs.` };
+  }
+  if (isKnowledgeTool(ctx.tool) && !needsApproval) {
+    return {
+      decision: "allow",
+      reason: `"${name}" only writes memory or skills through proposals, so it runs (its writes wait for a person).`,
+    };
   }
   const readOnlyNote = isReadOnly(ctx.tool) ? "is read-only but always needs a person's approval" : null;
 
