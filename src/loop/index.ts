@@ -42,5 +42,13 @@ export { JOB_EXCLUDED_CAPABILITIES, makeJobRunner, unattendedPolicy } from "./jo
 export type { JobRunnerOptions } from "./job-runner.js";
 export { storageKnowledge } from "./knowledge.js";
 export type { KnowledgeSource } from "./knowledge.js";
+export {
+  TAINTED_AT_META_KEY,
+  TAINTED_META_KEY,
+  containsUntrustedWrapper,
+  isSessionTainted,
+  markSessionTainted,
+  sessionMarkedTainted,
+} from "./taint.js";
 export { SEARCH_TEXT_TOOL_OUTPUT_CHARS, isParallelSafe, runToolRound } from "./tools.js";
 export type { ToolEnv, ToolOutcome, ToolUseLike } from "./tools.js";

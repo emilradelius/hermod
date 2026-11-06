@@ -17,7 +17,14 @@
  *   appended verbatim (thinking included), except the documented fallback echo rules (SDK facts §2.6).
  * - tools: see ./tools.ts (approval policy, proposals, parallel read-only calls, one user message of results).
  * - compress: see ./compress.ts (summary on the background model, restart from the summary, never edit a turn).
- * - finish: session status, endedAt and counters; RunResult.
+ * - taint (./taint.ts): belongs to the conversation the model sees, so it lasts for the rest of the SESSION. A run
+ *   starts tainted when its parent is (inheritTainted), when the session row says so (meta.tainted), when a loaded
+ *   message carries an untrusted wrapper (sessions stored before the flag), or when its own user message does (an
+ *   app that wraps pre-step output with wrapUntrusted). The first time a run is tainted, the row records it once
+ *   (meta.tainted, meta.taintedAt). A compression summary of a tainted conversation is wrapped as untrusted too.
+ * - finish: session status, endedAt and counters; RunResult. RunResult.proposals lists every proposal created
+ *   during the run in its session (action, memory and skill, whoever's tool made it, except the post-session
+ *   review's) and a delegate child's, each once, in creation order.
  */
 import { randomUUID } from "node:crypto";
 import type Anthropic from "@anthropic-ai/sdk";
@@ -35,6 +42,7 @@ import {
   type ClassifiedError,
   type ContentBlock,
   type Effort,
+  type Id,
   type LoopPhase,
   type LoopState,
   type Message,
@@ -59,6 +67,7 @@ import { budgetStop, createBudget, wallClockUsed, type Budget } from "./budget.j
 import { COMPRESSION_MARKER, compressConversation, estimateTokens, hasPendingToolUse } from "./compress.js";
 import { DELEGATE_EXCLUDED_CAPABILITIES, DELEGATE_RESULT_CHARS, delegateSettingsOf } from "./delegate.js";
 import { storageKnowledge, type KnowledgeSource } from "./knowledge.js";
+import { containsUntrustedWrapper, markSessionTainted, sessionMarkedTainted } from "./taint.js";
 import { messageOf, runToolRound, truncate, type ToolEnv, type ToolUseLike } from "./tools.js";
 
 export const MAX_RETRIES = 3;
@@ -88,9 +97,12 @@ export interface LoopDeps extends RunDeps {
   allowOwnerMessaging?: boolean;
 }
 
+/** The actor of the post-session review (learning/review.ts); its proposals belong to the review, not to a run. */
+const REVIEW_ACTOR = "review";
+
 /** Internal run options (sub-agents, scheduled jobs). */
 export interface RunOptions {
-  /** Start the run tainted (a child of a tainted parent). */
+  /** Start the run tainted (a child of a tainted parent). The session's own taint applies as well. */
   inheritTainted?: boolean;
   /** The audit actor for tool decisions. Default "agent:<id>". */
   actor?: string;
@@ -172,7 +184,7 @@ export async function runAgentWith(
     model: settings.model,
     messages: opened.history,
     costUsd: 0,
-    tainted: options.inheritTainted === true,
+    tainted: options.inheritTainted === true || opened.tainted,
     lastPromptTokens: 0,
     compressions: 0,
     proposals: [],
@@ -196,7 +208,33 @@ export async function runAgentWith(
   const append = async (role: MessageRecord["role"], content: MessageParam["content"], text: string): Promise<MessageRecord> =>
     storage.messages.append(state.sessionId, { role, content, text });
 
+  // Taint is recorded on the session row once, the first time this run is tainted; it is never cleared.
+  let taintRecorded = sessionMarkedTainted(session);
+  const recordTaint = async (): Promise<void> => {
+    if (!state.tainted || taintRecorded) return;
+    taintRecorded = await markSessionTainted(storage, state.sessionId, now());
+  };
+
+  // Proposals of this session that existed before the run; everything new in the session is this run's.
+  const knownProposals = new Set<Id>();
+  const addProposal = (id: Id): void => {
+    if (knownProposals.has(id)) return;
+    knownProposals.add(id);
+    state.proposals.push(id);
+  };
+  /** Adds the session's new proposals (action, memory, skill) in creation order (the list is newest first). */
+  const collectProposals = async (): Promise<void> => {
+    const listed = await storage.proposals.list({ sessionId: state.sessionId });
+    for (const proposal of [...listed].reverse()) {
+      if (proposal.createdBy !== REVIEW_ACTOR) addProposal(proposal.id);
+    }
+  };
+
   try {
+    if (input.sessionId !== undefined) {
+      for (const proposal of await storage.proposals.list({ sessionId: state.sessionId })) knownProposals.add(proposal.id);
+    }
+    await recordTaint();
     // A history that ends with an unanswered tool_use (a run that stopped mid-round) gets "not run" results.
     const dangling = danglingToolUses(state.messages);
     if (dangling.length > 0) {
@@ -211,6 +249,11 @@ export async function runAgentWith(
     state.messages.push(userMessage);
     await append("user", userMessage.content, userText);
     state.counters.userTurns += 1;
+    // Context the app wrapped as untrusted (e.g. a job's pre-step output) taints the run from its first call.
+    if (containsUntrustedWrapper(userMessage.content)) {
+      state.tainted = true;
+      await recordTaint();
+    }
 
     // ── helpers that use the state ──────────────────────────────────────────────────────────────────────────
     const promptEstimate = (): number => estimateTokens({ system, tools, messages: state.messages });
@@ -327,6 +370,9 @@ export async function runAgentWith(
       if (!result) return false;
       state.messages = result.messages;
       state.compressions += 1;
+      // The summary of a tainted conversation is wrapped as untrusted; the session row keeps the flag as well.
+      if (containsUntrustedWrapper(result.messages)) state.tainted = true;
+      await recordTaint();
       // The next call reports the real prompt size; until then the threshold cannot fire again (no loop).
       state.lastPromptTokens = 0;
       await append("system", [{ type: "text", text: "The conversation was compressed here; it restarts from the summary below." }], `${COMPRESSION_MARKER} ${now().toISOString()}`);
@@ -370,11 +416,14 @@ export async function runAgentWith(
         });
         state.delegatedUsd += result.costUsd;
         state.costUsd = budget.tracker.totalUsd + state.delegatedUsd;
-        for (const id of result.proposals) state.proposals.push(id);
+        // This session's proposals made earlier in the round come first, then the child's (creation order).
+        await collectProposals();
+        for (const id of result.proposals) addProposal(id);
         const prefix = result.end === "end_turn" ? "" : `(The sub-agent stopped early: ${result.end}.)\n`;
         const text = truncate(prefix + (result.text || "(no final text)"), DELEGATE_RESULT_CHARS);
         if (report.tainted) {
           state.tainted = true;
+          await recordTaint();
           return wrapUntrusted(text, { source: "delegate", nonce: createNonce() });
         }
         return text;
@@ -505,14 +554,15 @@ export async function runAgentWith(
         };
         if (input.signal) env.signal = input.signal;
         const outcomes = await runToolRound(toolUses, registry, env, (record) => callbacks?.onToolCall?.(record));
+        // Recorded before the wrapped results are stored, so a later run of the session starts tainted.
+        await recordTaint();
         const results: ToolResultBlockParam[] = outcomes.map((o) => o.result);
         const resultMessage: MessageParam = { role: "user", content: results };
         state.messages.push(resultMessage);
         await append("user", resultMessage.content, outcomes.map((o) => o.searchText).join("\n"));
-        for (const o of outcomes) {
-          state.toolCalls.push(o.record);
-          if (o.record.proposalId) state.proposals.push(o.record.proposalId);
-        }
+        for (const o of outcomes) state.toolCalls.push(o.record);
+        // Action proposals of this round and those the knowledge tools made (memory, skills).
+        await collectProposals();
         state.counters.toolIterations += 1;
         continue;
       }
@@ -527,6 +577,7 @@ export async function runAgentWith(
       break;
     }
   } catch (error) {
+    await recordTaint().catch(() => null);
     await storage.sessions
       .update(state.sessionId, { status: "error", endedAt: now().toISOString(), counters: state.counters })
       .catch(() => null);
@@ -538,6 +589,7 @@ export async function runAgentWith(
   const end: RunEnd = state.end ?? "error";
   state.end = end;
   if (options.taintReport) options.taintReport.tainted = state.tainted;
+  await recordTaint();
   const status = end === "error" ? "error" : end === "aborted" ? "aborted" : "done";
   await storage.sessions.update(state.sessionId, { status, endedAt: now().toISOString(), counters: state.counters });
   return {
@@ -562,7 +614,7 @@ async function openSession(
   settings: Settings,
   knowledge: KnowledgeSource,
   redactor: (text: string) => string,
-): Promise<{ session: SessionRecord; history: MessageParam[]; attended: boolean }> {
+): Promise<{ session: SessionRecord; history: MessageParam[]; attended: boolean; tainted: boolean }> {
   const { storage } = deps;
   if (input.sessionId !== undefined) {
     const existing = await storage.sessions.get(input.sessionId);
@@ -573,7 +625,9 @@ async function openSession(
     const history = rebuildHistory(await storage.messages.list(existing.id));
     const attended = input.attended ?? existing.attended;
     const updated = (await storage.sessions.update(existing.id, { status: "running", endedAt: null })) ?? existing;
-    return { session: updated, history, attended };
+    // Untrusted text from an earlier run is still in the conversation: the flag, or a wrapper in the loaded history.
+    const tainted = sessionMarkedTainted(updated) || history.some((message) => containsUntrustedWrapper(message.content));
+    return { session: updated, history, attended, tainted };
   }
   const kind: SessionKind = input.kind ?? "chat";
   const attended = input.attended ?? kind === "chat";
@@ -596,7 +650,7 @@ async function openSession(
     meta,
     ...(deps.newId ? { id: deps.newId() } : {}),
   });
-  return { session, history: [], attended };
+  return { session, history: [], attended, tainted: false };
 }
 
 /** The frozen knowledge block of the system prompt, from the session row only. */

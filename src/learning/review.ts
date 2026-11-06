@@ -11,14 +11,18 @@
  * - Every write must cite { messageId, quote } from the REVIEWED conversation; verifyEvidence checks each quote
  *   (requireGrounding), and anything that does not hold up is refused with the reason, which the reviewer sees.
  * - Direct writes: only an add-only batch to a store whose owner allows add-only writes (autoApply "add"), and only
- *   when the reviewed session is an attended chat and every quote comes from a genuine user message's own words (not
- *   a tool result, not the assistant, not the app's context prefix). Patches and removals, shadow-mode agents, jobs,
- *   delegates and facts grounded in tool output always become proposals.
+ *   when the reviewed session is an attended chat, every quote comes from a genuine user message's own words (not
+ *   a tool result, not the assistant, not the app's context prefix), the reviewed session is not tainted (no
+ *   meta.tainted, no untrusted wrapper in any of its messages) and this review has not called session_search. The
+ *   entry text is not bound to the quote, so text injected into the reviewed conversation or into another session
+ *   the search returned could otherwise save itself while citing a harmless user quote. Patches and removals,
+ *   shadow-mode agents, jobs, delegates and facts grounded in tool output always become proposals.
  * - The agent being off means off: runAgent throws AgentOffError before any write or model call.
  */
 import { z } from "zod";
 import { runAgentWith, type LoopDeps } from "../loop/agent.js";
 import { unattendedPolicy } from "../loop/job-runner.js";
+import { isSessionTainted } from "../loop/taint.js";
 import { knowledgeDeps } from "../memory/knowledge-deps.js";
 import type { MemoryService } from "../memory/memory.js";
 import { DEFAULTS } from "../model/models.js";
@@ -54,6 +58,8 @@ export const DEFAULT_REVIEW_COST_USD = 0.25;
 /** The actor of every proposal and audit entry the review makes. */
 export const REVIEW_ACTOR = "review";
 export const REVIEW_TOOLSET = "review";
+/** The name of the reviewer's search tool; once the review has called it, nothing it saves applies directly. */
+export const REVIEW_SEARCH_TOOL = "session_search";
 export const SESSION_READ_DEFAULT_LIMIT = 25;
 export const SESSION_READ_MAX_LIMIT = 50;
 /** Characters of one message shown in a page (a single message can be read in full with messageId). */
@@ -302,6 +308,24 @@ async function groundIn(
   return problems.length > 0 ? { ok: false, reason: problems.join(" ") } : { ok: true, evidence, allFromUser };
 }
 
+/**
+ * Whether a direct write is ruled out by what the review has read: the reviewed conversation holds untrusted text
+ * (flag or wrapper, read fresh from storage), or this review called session_search (other sessions' text). The
+ * review's own session is the one the tool runs in (ctx.sessionId); its stored assistant turns show the calls,
+ * including the one being decided now.
+ */
+async function readUntrustedText(storage: Storage, reviewed: SessionRecord, reviewSessionId: Id): Promise<boolean> {
+  const current = (await storage.sessions.get(reviewed.id)) ?? reviewed;
+  if (isSessionTainted(current, await storage.messages.list(reviewed.id))) return true;
+  const own = reviewSessionId === reviewed.id ? [] : await storage.messages.list(reviewSessionId);
+  return own.some((message) => message.role === "assistant" && callsTool(message, REVIEW_SEARCH_TOOL));
+}
+
+function callsTool(message: MessageRecord, name: string): boolean {
+  const content = message.content;
+  return Array.isArray(content) && content.some((block) => block.type === "tool_use" && block.name === name);
+}
+
 function refuse(ledger: ReviewLedger, reason: string): string {
   ledger.refused.push({ reason });
   return `Refused, nothing was saved or proposed: ${reason}`;
@@ -314,7 +338,8 @@ export function makeReviewMemoryTool(deps: ReviewToolsetDeps): ToolDef {
       "Propose durable facts for persistent memory: add, patch (replace a whole entry) or remove entries, in one batch.",
       "Every batch cites evidence from the reviewed conversation (message id and an exact quote); the code checks it.",
       "Write facts, not orders, and no dates or ids. A batch becomes a proposal a person approves; only an add-only",
-      "batch to a store that allows it, grounded in the user's own words, is saved at once.",
+      "batch to a store that allows it, grounded in the user's own words in a conversation without outside text, is",
+      "saved at once.",
     ].join(" "),
     input: reviewMemoryInput,
     readOnly: false,
@@ -323,6 +348,8 @@ export function makeReviewMemoryTool(deps: ReviewToolsetDeps): ToolDef {
       const grounding = await groundIn(deps.storage, deps.reviewed, input.evidence);
       if (!grounding.ok) return refuse(deps.ledger, grounding.reason);
       const ops = input.ops as MemoryOp[];
+      // Only a direct-write candidate needs the extra check; everything else is a proposal anyway.
+      const direct = grounding.allFromUser && ctx.mode !== "shadow" && !(await readUntrustedText(deps.storage, deps.reviewed, ctx.sessionId));
       const result = await deps.memory.write({
         agentId: deps.reviewed.agentId,
         sessionId: deps.reviewed.id,
@@ -334,8 +361,9 @@ export function makeReviewMemoryTool(deps: ReviewToolsetDeps): ToolDef {
         rationale: input.rationale,
         requireGrounding: true,
         shadow: false,
-        // Only the user's own words may write themselves into an add-only store; a shadow agent never writes.
-        noAutoApply: !grounding.allFromUser || ctx.mode === "shadow",
+        // Only the user's own words in a clean conversation may write themselves into an add-only store, and only
+        // when the review read nothing from other sessions; a shadow agent never writes.
+        noAutoApply: !direct,
       });
       switch (result.status) {
         case "applied":
@@ -464,7 +492,7 @@ export function makeSessionReadTool(storage: Storage, reviewed: SessionRecord): 
 /** session_search for the reviewer: earlier sessions of the agent (never review sessions), snippets only. */
 export function makeReviewSearchTool(storage: Storage, reviewed: SessionRecord): ToolDef<typeof reviewSearchInput> {
   return {
-    name: "session_search",
+    name: REVIEW_SEARCH_TOOL,
     description: [
       "Search the agent's earlier sessions with plain words, to check whether something recurs. Returns matching",
       "snippets with session and message ids. Only messages of the conversation under review can be cited as evidence.",

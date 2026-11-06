@@ -117,7 +117,10 @@ export interface ToolContext {
   mode: AgentMode;
   /** A person is present and can answer (false for scheduled runs). */
   attended: boolean;
-  /** Untrusted text entered the conversation since the last genuine user message. */
+  /**
+   * Untrusted text is in the conversation the model sees, in this run or an earlier run of the session; it stays set
+   * for the rest of the session.
+   */
   tainted: boolean;
   storage: Storage;
   now(): Date;
@@ -167,6 +170,10 @@ export type ApprovalDecision = "allow" | "deny" | "propose";
 export interface ApprovalContext {
   mode: AgentMode;
   attended: boolean;
+  /**
+   * Untrusted text is in the conversation the model sees, in this run or an earlier run of the session; it stays set
+   * for the rest of the session.
+   */
   tainted: boolean;
   tool: ToolDef;
   input: unknown;
@@ -689,9 +696,14 @@ export interface LoopState {
   model: string;
   messages: MessageParam[];
   costUsd: number;
+  /**
+   * Untrusted text is in the conversation the model sees, in this run or an earlier run of the session; it stays set
+   * for the rest of the session.
+   */
   tainted: boolean;
   lastPromptTokens: number;
   compressions: number;
+  /** Proposals created during this run (see RunResult.proposals). */
   proposals: Id[];
   toolCalls: ToolCallRecord[];
   errors: ClassifiedError[];
@@ -707,6 +719,10 @@ export interface RunResult {
   refusalCategory: string | null;
   costUsd: number;
   iterations: number;
+  /**
+   * Every proposal created during this run in its session (action proposals of the loop, and the memory and skill
+   * proposals the knowledge tools made), then a delegate child's, each once, in creation order.
+   */
   proposals: Id[];
   toolCalls: ToolCallRecord[];
   errors: ClassifiedError[];

@@ -14,6 +14,7 @@
  */
 import { createNonce, UNTRUSTED_TAG, wrapUntrusted } from "../safety/untrusted.js";
 import type Anthropic from "@anthropic-ai/sdk";
+import { containsUntrustedWrapper } from "./taint.js";
 import type { Effort, MessageParam, ModelRequest } from "../types.js";
 
 export const SUMMARY_HEADINGS = ["Goal", "Constraints", "Progress", "Decisions", "Files", "Next steps"] as const;
@@ -192,13 +193,16 @@ export function summaryMessage(summary: string, options: { untrusted: boolean; h
 
 /** True when any message carries wrapped untrusted content. */
 export function containsUntrusted(messages: readonly MessageParam[]): boolean {
-  return messages.some((message) => safeJson(message.content).includes(`<${UNTRUSTED_TAG}`));
+  return messages.some((message) => containsUntrustedWrapper(message.content));
 }
 
 export interface CompressInput {
   messages: readonly MessageParam[];
   tailTokens: number;
-  /** Whether untrusted text entered the run (the summary is then wrapped as untrusted too). */
+  /**
+   * Whether untrusted text is in the conversation (in this run or an earlier run of the session). The summary is then
+   * wrapped as untrusted too, so a summary of a tainted conversation stays tainted when the session is reopened.
+   */
   tainted: boolean;
   /** Calls the summary model; returns the summary text, or null when it failed (the caller records why). */
   summarise(request: ModelRequest): Promise<string | null>;

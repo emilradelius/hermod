@@ -215,7 +215,7 @@ describe("runAgent: untrusted text cannot trigger side effects", () => {
     expect(result.toolCalls[1]?.decision).toBe("propose");
   });
 
-  it("the taint lasts until the next genuine user message (the next runAgent input)", async () => {
+  it("the taint lasts for the rest of the session: the next run of it still proposes the side effect", async () => {
     const storage = await setup("autonomous");
     const tools = makeTools();
     const first = await runAgent(
@@ -232,7 +232,16 @@ describe("runAgent: untrusted text cannot trigger side effects", () => {
       { userMessage: "now save my note", sessionId: first.sessionId },
       { storage, model: new FakeModelClient([toolUseMessage([{ name: "save_note", input: { text: "mine" } }]), textMessage("saved")]), sleep: noSleep },
     );
-    expect(second.toolCalls[0]?.decision).toBe("allow");
+    // The page is still in the conversation the model sees, so the run starts tainted.
+    expect(second.toolCalls[0]?.decision).toBe("propose");
+    expect(tools.executed).toEqual(["fetch_page"]);
+    // A new session starts clean.
+    const third = await runAgent(
+      baseConfig([tools.set]),
+      { userMessage: "save my note" },
+      { storage, model: new FakeModelClient([toolUseMessage([{ name: "save_note", input: { text: "mine" } }]), textMessage("saved")]), sleep: noSleep },
+    );
+    expect(third.toolCalls[0]?.decision).toBe("allow");
     expect(tools.executed).toEqual(["fetch_page", "save_note:mine"]);
   });
 });

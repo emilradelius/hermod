@@ -336,11 +336,11 @@ async function check(fixture, ctx) {
     if (p.targets !== undefined) expectEq("proposal targets", sorted(all.map((x) => x.target)), sorted(p.targets));
     if (p.shadow !== undefined) expectEq("proposal shadow flags", sorted(all.map((x) => x.shadow)), sorted(p.shadow));
     if (p.createdBy !== undefined) expectEq("proposal authors", sorted(all.map((x) => x.createdBy)), sorted(p.createdBy));
-    // The run reports the proposals it made itself: the review all of its own, the loop its action proposals
-    // (proposals made inside a knowledge tool are reported in that tool's result to the model).
+    // The run reports every proposal it created (action, memory and skill; the review all of its own), each once,
+    // in creation order. Nothing else creates proposals in a scenario, so that is all of them, oldest first.
     if (result && Array.isArray(result.proposals)) {
-      const own = fixture.run.type === "review" ? all : all.filter((x) => x.kind === "action");
-      expectEq("proposals reported by the run", sorted(result.proposals), sorted(own.map((x) => x.id)));
+      const created = [...all].reverse().map((x) => x.id);
+      expectEq("proposals reported by the run", result.proposals, created);
     }
   }
 
