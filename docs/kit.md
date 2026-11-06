@@ -204,6 +204,8 @@ Tests run hooks and CLIs in temporary git repositories (`test/kit/helpers.ts`: `
 libraries directly (`test/kit/kit-lib-tests-helpers.ts`). Rules:
 
 - Build fake secrets at runtime, e.g. `["sk", "ant", "api03", body].join("-")` (`no-secret-literals` enforces it).
+- Pin everything exactly: no `@latest` or `@canary` in docs, skills or scripts, actions by full commit SHA, runners,
+  images and Node by exact version (`no-floating-versions` enforces it).
 - A test must fail when the behaviour breaks; never weaken `test/**/proposals*` or `test/**/invariants*`.
 - Kit files start with `// @ts-check` and import only `node:` builtins and relative paths.
 - Change `DEFAULTS`, the seed `config.json` and this page together.
@@ -215,6 +217,9 @@ libraries directly (`test/kit/kit-lib-tests-helpers.ts`). Rules:
 - Checks are not sandboxed: the worker stops hangs, not file access. Review them like code.
 - `.local/` is per machine; a cloud container loses the ledger. A new transcript format leaves reflect-prep
   without messages.
+- The hooks run only when Claude Code starts in the repository (its project folder). A session started above it,
+  for example one cloud session over several repositories, gets no brief, no ledger and no Stop check, and
+  reflect-prep finds no session; /reflect's evidence then has to be gathered by hand.
 - Targets update only when a person runs sync. recall is keyword search, not semantic.
 - CI runs on Linux only. hermod's CI runs its own checks on the diff against `main`; a target's CI runs only what
   that repository adds (for example the validator).

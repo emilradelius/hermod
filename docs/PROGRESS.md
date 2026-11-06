@@ -45,12 +45,18 @@ not done or not verified, and one line per recent session. Each decision is one 
   in the tests and evals is the fake client.
 - The hooks were tested as processes (vitest runs them with real stdin and git repositories), not in a live Claude
   Code session on Emil's computer. Windows was not tested.
+- This session was started above the repositories, so no kit hook ran in any of them (no brief, ledger or Stop
+  check), and reflect-prep found no session: /reflect ran on evidence gathered by hand (`docs/kit.md`, known
+  limits). A session started inside a repository gets all of it.
 - Known limits, written in `docs/runtime.md` and `docs/kit.md`: cost reservations are per process; token estimates
   are estimates; the denylist and the injection scan are backstops; prompt injection is mitigated, not solved.
 - `npm audit` reports 9 moderate findings, all from one advisory in `minimatch` < 11.0.1, pulled in only by the lint
   tooling (dev-time, no runtime exposure). Revisit when ESLint and typescript-eslint move past it.
 
 ## Recent sessions
+- 2026-11-06: /reflect, on evidence gathered by hand: a check, `no-floating-versions` (no `@latest`/`@canary`,
+  actions by SHA, exact runners, images and Node), and the seeded checks README now documents `ctx.git`'s result
+  and literal pathspecs and that a check never runs repository files.
 - 2026-11-06: an independent audit of the records, with fixes: the registry refuses every messaging tool (the
   owner-messaging opt-in is gone), the Next.js skill no longer suggests an unpinned codemod, neutral test examples
   and wording for the target repositories, a token built at runtime (and a check for it), the curator with the

@@ -27,15 +27,23 @@ export default {
 ```
 
 - `ctx` holds `root`, `base`, `changedFiles` (posix paths), `read(path)` (working tree, or null), `readAt(ref,
-  path)` (text at a ref, or null), `diff(path)` (unified diff from base, "" when none) and `git(args)` (never
-  throws). `run` may be async.
+  path)` (text at a ref, or null), `diff(path)` (unified diff from base, "" when none) and `git(args)` (below).
+  `run` may be async.
 - `when` patterns: `dir/` matches everything under it, a plain path matches exactly, and `*` / `**` are globs.
-- In `--self-test`, `read` reads the example's `files`, `readAt` its `baseFiles`, and `git` always fails.
+- `git(args)` never throws and returns `{ ok, code, stdout, stderr, error }`, not a string: read `stdout` only
+  when `ok` is true. Unlike `when`, its pathspecs are literal (no globs), so `ctx.git(['ls-files', '--',
+  'src/*.ts'])` lists nothing; list the folder and filter the paths in code.
+- In `--self-test`, `read` reads the example's `files`, `readAt` its `baseFiles`, and `git` always fails, so the
+  examples never reach code that uses git. Try that code with a real `node .claude/hermod/check.mjs` run, which
+  also runs checks that are not committed yet.
 
 ## Rules
 
 - Plain Node 22, no dependencies, no network, no writes. Fast and deterministic: each check runs in its own
   worker and is stopped after 5 seconds.
+- Read the repository's files as text and never run them: no `eval`, `new Function` or `node:vm`, and no
+  `import` of an app or data file. `node:vm` is not a security boundary, so a pull request's files would run as
+  code on the machine that runs the checks. Parse a data file instead.
 - A failing message says what is wrong and how to fix it, in one or two sentences.
 - No secrets or personal data in examples; build fake ones from pieces at runtime.
 - New and changed checks go through a pull request a person merges. `/reflect` may propose one when a lesson
