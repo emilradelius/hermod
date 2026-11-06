@@ -7,21 +7,24 @@ import {
   existsSync,
   mkdirSync,
   readdirSync,
+  readFileSync,
   rmSync,
   symlinkSync,
   utimesSync,
   writeFileSync,
 } from "node:fs";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   BINARY,
+  CORE_SKILLS,
   CRLF_TEXT,
   DEFAULT_TARGET_FILES,
   HOOKS_V1,
   HOOKS_V2,
   type KitFixture,
+  OPTIONAL_SKILLS,
   type SyncJsonRun,
   type Tree,
   SYNC_SCRIPT,
@@ -35,6 +38,8 @@ import {
   readStamp,
   readText,
   sha256,
+  skillPaths,
+  skillsKit,
   snapshot,
   snapshotOutsideClaude,
   writeKit,
@@ -349,6 +354,8 @@ describe("sync: install, no-op and upgrade", () => {
     const run = sandbox.syncJson(args(target, "v0.1.0"));
     expect(run.status, run.stdout + run.stderr).toBe(0);
     expect(run.json).toMatchObject({ ok: true, applied: true, dryRun: false, kit: "0.1.0", ref: "v0.1.0", previous: null });
+    // This fixture kit has no kit/skills.json, so its one skill is core.
+    expect(run.json.skills).toEqual({ core: ["reflect"], chosen: [], notChosen: [], from: "default" });
     expect(run.json.plan).toEqual({
       add: kitPaths(kit),
       update: [],
@@ -369,8 +376,8 @@ describe("sync: install, no-op and upgrade", () => {
     );
     expect(readText(target, ".claude/settings.json")).toBe(`${JSON.stringify(HOOKS_V1, null, 2)}\n`);
     const stamp = readStamp(target);
-    expect(Object.keys(stamp)).toEqual(["kit", "ref", "commit", "syncedAt", "files"]);
-    expect(stamp).toMatchObject({ kit: "0.1.0", ref: "v0.1.0", commit: source.v1 });
+    expect(Object.keys(stamp)).toEqual(["kit", "ref", "commit", "syncedAt", "skills", "files"]);
+    expect(stamp).toMatchObject({ kit: "0.1.0", ref: "v0.1.0", commit: source.v1, skills: [] });
     expect(stamp.syncedAt).toBe(new Date(stamp.syncedAt).toISOString());
     expect(Date.parse(stamp.syncedAt)).toBeGreaterThanOrEqual(started - 1000);
     expect(Date.parse(stamp.syncedAt)).toBeLessThanOrEqual(Date.now() + 1000);
@@ -720,6 +727,328 @@ describe("sync: seeds", () => {
   });
 });
 
+describe("sync: optional skills", () => {
+  const ALL_SKILLS = [...OPTIONAL_SKILLS, ...CORE_SKILLS].sort();
+  /** s1 has no kit/skills.json (every skill is core); s2 lists the three library skills as optional; s3 changes
+   *  every SKILL.md. */
+  const kits = {
+    s1: skillsKit("0.1.0", undefined),
+    s2: skillsKit("0.2.0", { optional: OPTIONAL_SKILLS }),
+    s3: skillsKit("0.3.0", { optional: OPTIONAL_SKILLS }, "Body v3."),
+  };
+  let skillsSource: string;
+
+  beforeAll(() => {
+    skillsSource = sandbox.dir("hermod-skills");
+    sandbox.initRepo(skillsSource);
+    for (const [tag, kit] of Object.entries(kits)) {
+      writeKit(skillsSource, kit);
+      sandbox.commitAll(skillsSource, `kit ${kit.version}`);
+      sandbox.git(skillsSource, "tag", tag);
+    }
+  });
+
+  function skillArgs(target: string, ref: string, ...extra: string[]): string[] {
+    return ["--source", skillsSource, "--target", target, "--ref", ref, ...extra];
+  }
+
+  /** A target that has been synced to `ref` (with these extra arguments) and committed. */
+  function skillsTarget(ref: string, ...extra: string[]): string {
+    const target = sandbox.makeTarget();
+    const run = sandbox.syncJson(skillArgs(target, ref, ...extra));
+    expect(run.status, run.stdout + run.stderr).toBe(0);
+    sandbox.commitAll(target, `sync ${ref}`);
+    return target;
+  }
+
+  /** The kit's files without those of these skills. */
+  function without(kit: KitFixture, names: string[]): string[] {
+    const skipped = skillPaths(kit, names);
+    return kitPaths(kit).filter((rel) => !skipped.includes(rel));
+  }
+
+  it("a first install without --skills syncs only the core skills, and says so", () => {
+    const target = sandbox.makeTarget();
+    const run = sandbox.syncJson(skillArgs(target, "s2"));
+    expect(run.status, run.stdout + run.stderr).toBe(0);
+    expect(run.json.skills).toEqual({ core: CORE_SKILLS, chosen: [], notChosen: OPTIONAL_SKILLS, from: "default" });
+    const synced = without(kits.s2, OPTIONAL_SKILLS);
+    expect(run.json.plan?.add).toEqual(synced);
+    expect(listFiles(target, ".claude/skills")).toEqual([".claude/skills/curate/SKILL.md", ".claude/skills/reflect/SKILL.md"]);
+    // Every other kit file is synced as before; kit/skills.json itself is not copied.
+    expect(listFiles(target, ".claude")).toEqual(
+      [...synced, ...Object.keys(kits.s2.seeds ?? {}), ".claude/settings.json", ".claude/hermod/VERSION.json"].sort(),
+    );
+    const stamp = readStamp(target);
+    expect(stamp.skills).toEqual([]);
+    expect(Object.keys(stamp.files)).toEqual(synced);
+
+    const human = sandbox.sync(skillArgs(sandbox.makeTarget(), "s2", "--dry-run"));
+    expect(human.status, human.stderr).toBe(0);
+    expect(human.stdout).toContain(
+      "  before  no stamp (first install)\n" +
+        "  skills  core: curate, reflect\n" +
+        "          optional, chosen: none (the default on a first install)\n" +
+        "          optional, not chosen: anthropic-sdk, nextjs-16, supabase-rls\n\n",
+    );
+  });
+
+  it("--skills adds the named optional skills, and the stamp records them", () => {
+    const target = sandbox.makeTarget();
+    const run = sandbox.syncJson(skillArgs(target, "s2", "--skills", "anthropic-sdk"));
+    expect(run.status, run.stdout + run.stderr).toBe(0);
+    expect(run.json.skills).toEqual({
+      core: CORE_SKILLS,
+      chosen: ["anthropic-sdk"],
+      notChosen: ["nextjs-16", "supabase-rls"],
+      from: "option",
+    });
+    expect(run.json.plan?.add).toEqual(without(kits.s2, ["nextjs-16", "supabase-rls"]));
+    expect(listFiles(target, ".claude/skills")).toEqual([
+      ".claude/skills/anthropic-sdk/SKILL.md",
+      ".claude/skills/anthropic-sdk/references/tool-loop.md",
+      ".claude/skills/curate/SKILL.md",
+      ".claude/skills/reflect/SKILL.md",
+    ]);
+    const stamp = readStamp(target);
+    expect(Object.keys(stamp)).toEqual(["kit", "ref", "commit", "syncedAt", "skills", "files"]);
+    expect(stamp.skills).toEqual(["anthropic-sdk"]);
+    for (const rel of skillPaths(kits.s2, ["anthropic-sdk"])) {
+      expect(readText(target, rel)).toBe(kits.s2.files[rel]);
+      expect(stamp.files[rel], rel).toBe(sha256(kits.s2.files[rel] ?? ""));
+    }
+    expect(Object.keys(stamp.files)).toEqual(without(kits.s2, ["nextjs-16", "supabase-rls"]));
+
+    // Names in any order, with a space after the comma: the stamp lists them sorted.
+    const other = sandbox.makeTarget();
+    const two = sandbox.syncJson(skillArgs(other, "s2", "--skills", "supabase-rls, anthropic-sdk"));
+    expect(two.status, two.stdout + two.stderr).toBe(0);
+    expect(two.json.skills?.chosen).toEqual(["anthropic-sdk", "supabase-rls"]);
+    expect(readStamp(other).skills).toEqual(["anthropic-sdk", "supabase-rls"]);
+    expect(listFiles(other, ".claude/skills")).toEqual(skillPaths(kits.s2, ["anthropic-sdk", "curate", "reflect", "supabase-rls"]));
+
+    const human = sandbox.sync(skillArgs(sandbox.makeTarget(), "s2", "--skills", "anthropic-sdk"));
+    expect(human.status, human.stderr).toBe(0);
+    expect(human.stdout).toContain(
+      "          optional, chosen: anthropic-sdk (from --skills)\n          optional, not chosen: nextjs-16, supabase-rls\n",
+    );
+  });
+
+  it("a re-sync at a newer ref without --skills keeps the selection, and then changes nothing", () => {
+    const target = skillsTarget("s2", "--skills", "anthropic-sdk");
+    const run = sandbox.syncJson(skillArgs(target, "s3"));
+    expect(run.status, run.stdout + run.stderr).toBe(0);
+    expect(run.json.skills).toEqual({
+      core: CORE_SKILLS,
+      chosen: ["anthropic-sdk"],
+      notChosen: ["nextjs-16", "supabase-rls"],
+      from: "stamp",
+    });
+    expect(run.json.plan).toMatchObject({ add: [], delete: [], conflict: [], kept: [], stamp: "update" });
+    expect(run.json.plan?.update).toEqual([
+      ".claude/skills/anthropic-sdk/SKILL.md",
+      ".claude/skills/curate/SKILL.md",
+      ".claude/skills/reflect/SKILL.md",
+    ]);
+    expect(readText(target, ".claude/skills/anthropic-sdk/SKILL.md")).toBe(kits.s3.files[".claude/skills/anthropic-sdk/SKILL.md"]);
+    expect(existsSync(path.join(target, ".claude/skills/nextjs-16"))).toBe(false);
+    expect(existsSync(path.join(target, ".claude/skills/supabase-rls"))).toBe(false);
+    expect(readStamp(target)).toMatchObject({ kit: "0.3.0", ref: "s3", skills: ["anthropic-sdk"] });
+
+    sandbox.commitAll(target, "sync s3");
+    const before = snapshot(target);
+    for (const extra of [[], ["--skills", "anthropic-sdk"]]) {
+      const again = sandbox.syncJson(skillArgs(target, "s3", ...extra));
+      expect(again.status, again.stdout + again.stderr).toBe(0);
+      expect(again.json.applied).toBe(false);
+      expect(again.json.plan).toMatchObject({ add: [], update: [], delete: [], stamp: "unchanged" });
+      expect(snapshot(target)).toEqual(before);
+    }
+    const human = sandbox.sync(skillArgs(target, "s3"));
+    expect(human.stdout).toContain("          optional, chosen: anthropic-sdk (as in the last sync)\n");
+    expect(human.stdout).toMatch(/Nothing to do: the target already has kit 0\.3\.0 at s3\./);
+    expect(snapshot(target)).toEqual(before);
+  });
+
+  it("--skills none deletes the unchanged files of the skills it drops and keeps a locally changed one", () => {
+    const target = skillsTarget("s2", "--skills", "anthropic-sdk,nextjs-16");
+    const edited = ".claude/skills/nextjs-16/SKILL.md";
+    const local = "---\nname: nextjs-16\ndescription: Changed in this repository.\n---\n\nOur own notes.\n";
+    writeFileSync(path.join(target, edited), local);
+    sandbox.commitAll(target, "local change to an optional skill");
+    const before = snapshot(target);
+    const run = sandbox.syncJson(skillArgs(target, "s2", "--skills", "none"));
+    expect(run.status, run.stdout + run.stderr).toBe(0);
+    expect(run.json.skills).toEqual({ core: CORE_SKILLS, chosen: [], notChosen: OPTIONAL_SKILLS, from: "option" });
+    expect(run.json.plan).toMatchObject({ add: [], update: [], conflict: [], stamp: "update" });
+    expect(run.json.plan?.delete).toEqual([
+      ".claude/skills/anthropic-sdk/SKILL.md",
+      ".claude/skills/anthropic-sdk/references/tool-loop.md",
+      ".claude/skills/nextjs-16/references/caching.md",
+    ]);
+    expect(run.json.plan?.kept).toEqual([
+      {
+        path: edited,
+        reason: expect.stringMatching(
+          /^belongs to the optional skill nextjs-16, which this sync does not install \(--skills\) but was changed in this repository, so it was left in place/,
+        ),
+      },
+    ]);
+    expect(existsSync(path.join(target, ".claude/skills/anthropic-sdk"))).toBe(false);
+    expect(existsSync(path.join(target, ".claude/skills/nextjs-16/references"))).toBe(false);
+    expect(readText(target, edited)).toBe(local);
+    const after = snapshot(target);
+    for (const rel of without(kits.s2, OPTIONAL_SKILLS)) expect(after[rel], `${rel} was rewritten`).toBe(before[rel]);
+    const stamp = readStamp(target);
+    expect(stamp.skills).toEqual([]);
+    expect(Object.keys(stamp.files)).toEqual(without(kits.s2, OPTIONAL_SKILLS));
+
+    // The kept file belongs to the repository now: a later sync without --skills chooses nothing and leaves it alone.
+    sandbox.commitAll(target, "sync --skills none");
+    const later = sandbox.syncJson(skillArgs(target, "s3"));
+    expect(later.status, later.stdout + later.stderr).toBe(0);
+    expect(later.json.skills).toMatchObject({ chosen: [], from: "stamp" });
+    expect(later.json.plan).toMatchObject({ add: [], delete: [], kept: [], conflict: [] });
+    expect(readText(target, edited)).toBe(local);
+    expect(readStamp(target).skills).toEqual([]);
+  });
+
+  it("--skills all syncs every optional skill", () => {
+    const target = sandbox.makeTarget();
+    const run = sandbox.syncJson(skillArgs(target, "s2", "--skills", "all"));
+    expect(run.status, run.stdout + run.stderr).toBe(0);
+    expect(run.json.skills).toEqual({ core: CORE_SKILLS, chosen: OPTIONAL_SKILLS, notChosen: [], from: "option" });
+    expect(run.json.plan?.add).toEqual(kitPaths(kits.s2));
+    expect(listFiles(target, ".claude/skills")).toEqual(skillPaths(kits.s2, ALL_SKILLS));
+    const stamp = readStamp(target);
+    expect(stamp.skills).toEqual(OPTIONAL_SKILLS);
+    expect(Object.keys(stamp.files)).toEqual(kitPaths(kits.s2));
+  });
+
+  it("refuses a --skills name that is not an optional skill of the kit at the ref, and writes nothing", () => {
+    for (const target of [sandbox.makeTarget(), skillsTarget("s2", "--skills", "anthropic-sdk")]) {
+      const before = snapshot(target);
+      expectRefused(
+        sandbox.syncJson(skillArgs(target, "s2", "--skills", "anthropic-sdk,bogus")),
+        /^--skills: "bogus" is not an optional skill of the kit at s2 \([0-9a-f]{12}\)\. Optional skills: anthropic-sdk, nextjs-16, supabase-rls\.$/,
+      );
+      expectRefused(
+        sandbox.syncJson(skillArgs(target, "s2", "--skills", "bogus,reflect")),
+        /^--skills: "bogus", "reflect" are not optional skills of the kit at s2 \([0-9a-f]{12}\); reflect is a core skill, always synced\. Optional skills: anthropic-sdk, nextjs-16, supabase-rls\.$/,
+      );
+      expectRefused(
+        sandbox.syncJson(skillArgs(target, "s1", "--skills", "anthropic-sdk")),
+        /^--skills: "anthropic-sdk" is not an optional skill of the kit at s1 \([0-9a-f]{12}\); anthropic-sdk is a core skill, always synced\. Optional skills: none\.$/,
+      );
+      const human = sandbox.sync(skillArgs(target, "s2", "--skills", "bogus"));
+      expect(human.status).toBe(1);
+      expect(human.stdout).toBe("");
+      expect(human.stderr).toMatch(/^hermod sync: --skills: "bogus" is not an optional skill of the kit at s2 .*\. Optional skills: anthropic-sdk, nextjs-16, supabase-rls\.\n$/);
+      expect(snapshot(target)).toEqual(before);
+    }
+  });
+
+  it("refuses an invalid kit/skills.json, and writes nothing", () => {
+    const shape = /must be an object with an "optional" list of skill names/;
+    const cases: [unknown, RegExp][] = [
+      ['{ "optional": [', /^kit\/skills\.json at v1 \([0-9a-f]{12}\) is not valid JSON \(it ends too early\)\.$/],
+      [[], shape],
+      [{}, shape],
+      [{ optional: "anthropic-sdk" }, shape],
+      [{ optional: { "anthropic-sdk": true } }, shape],
+      [{ optional: [], core: ["reflect"] }, /may only contain "optional" \(found "core"\)/],
+      [{ optional: ["Anthropic-SDK"] }, /lists "Anthropic-SDK", which is not a skill name/],
+      [{ optional: [7] }, /lists 7, which is not a skill name/],
+      [{ optional: ["nextjs-16", "nextjs-16"] }, /lists "nextjs-16" more than once/],
+      [{ optional: ["missing-skill"] }, /lists "missing-skill", but kit\/files\/\.claude\/skills\/missing-skill\/ does not exist at that commit/],
+      [{ optional: ["hermod"] }, /lists "hermod", but kit\/files\/\.claude\/skills\/hermod\/ does not exist/],
+      [{ optional: ["none"] }, /lists "none", which cannot be a skill name/],
+    ];
+    for (const [skills, message] of cases) {
+      const { dir } = sandbox.makeSource(skillsKit("0.2.0", skills), "bad-skills");
+      sandbox.git(dir, "tag", "v1");
+      const target = sandbox.makeTarget();
+      const before = snapshot(target);
+      expectRefused(sandbox.syncJson(["--source", dir, "--target", target, "--ref", "v1"]), message);
+      expect(snapshot(target)).toEqual(before);
+    }
+  });
+
+  it("a ref without kit/skills.json syncs every skill, as before", () => {
+    const target = sandbox.makeTarget();
+    const run = sandbox.syncJson(skillArgs(target, "s1"));
+    expect(run.status, run.stdout + run.stderr).toBe(0);
+    expect(run.json.skills).toEqual({ core: ALL_SKILLS, chosen: [], notChosen: [], from: "default" });
+    expect(run.json.plan?.add).toEqual(kitPaths(kits.s1));
+    expect(listFiles(target, ".claude/skills")).toEqual(skillPaths(kits.s1, ALL_SKILLS));
+    expect(readStamp(target).skills).toEqual([]);
+    const human = sandbox.sync(skillArgs(sandbox.makeTarget(), "s1", "--dry-run"));
+    expect(human.stdout).toContain("  skills  core: anthropic-sdk, curate, nextjs-16, reflect, supabase-rls\n          optional: none\n\n");
+    for (const choice of ["none", "all"]) {
+      const other = sandbox.makeTarget();
+      const chosen = sandbox.syncJson(skillArgs(other, "s1", "--skills", choice));
+      expect(chosen.status, chosen.stdout + chosen.stderr).toBe(0);
+      expect(chosen.json.plan?.add).toEqual(kitPaths(kits.s1));
+    }
+  });
+
+  it("keeps an optional skill that the last sync installed as a core skill", () => {
+    const target = skillsTarget("s1");
+    expect(readStamp(target).skills).toEqual([]);
+    const before = snapshot(target);
+    const run = sandbox.syncJson(skillArgs(target, "s2"));
+    expect(run.status, run.stdout + run.stderr).toBe(0);
+    expect(run.json.skills).toEqual({ core: CORE_SKILLS, chosen: OPTIONAL_SKILLS, notChosen: [], from: "stamp" });
+    expect(run.json.plan).toMatchObject({ add: [], update: [], delete: [], kept: [], conflict: [], stamp: "update" });
+    const after = snapshot(target);
+    for (const rel of skillPaths(kits.s1, OPTIONAL_SKILLS)) expect(after[rel], `${rel} was rewritten`).toBe(before[rel]);
+    expect(readStamp(target).skills).toEqual(OPTIONAL_SKILLS);
+  });
+
+  it('reads a stamp without "skills" as: every optional skill it has a file of stays chosen', () => {
+    const target = skillsTarget("s1");
+    // A stamp as the sync before optional skills wrote it (no "skills" key). It lists only one file of nextjs-16
+    // and none of supabase-rls, which this target does not have.
+    const old = readStamp(target);
+    delete old.skills;
+    delete old.files[".claude/skills/nextjs-16/SKILL.md"];
+    for (const rel of skillPaths(kits.s1, ["supabase-rls"])) delete old.files[rel];
+    writeFileSync(path.join(target, ".claude/hermod/VERSION.json"), `${JSON.stringify(old, null, 2)}\n`);
+    rmSync(path.join(target, ".claude/skills/supabase-rls"), { recursive: true });
+    sandbox.commitAll(target, "a stamp from before optional skills");
+    const before = snapshot(target);
+    const run = sandbox.syncJson(skillArgs(target, "s2"));
+    expect(run.status, run.stdout + run.stderr).toBe(0);
+    expect(run.json.skills).toEqual({
+      core: CORE_SKILLS,
+      chosen: ["anthropic-sdk", "nextjs-16"],
+      notChosen: ["supabase-rls"],
+      from: "stamp",
+    });
+    expect(run.json.plan).toMatchObject({ add: [], update: [], delete: [], kept: [], conflict: [] });
+    expect(run.json.plan?.unchanged).toContain(".claude/skills/nextjs-16/SKILL.md");
+    const after = snapshot(target);
+    for (const rel of skillPaths(kits.s1, ["anthropic-sdk", "nextjs-16"])) expect(after[rel], `${rel} was rewritten`).toBe(before[rel]);
+    expect(existsSync(path.join(target, ".claude/skills/supabase-rls"))).toBe(false);
+    const stamp = readStamp(target);
+    expect(stamp.skills).toEqual(["anthropic-sdk", "nextjs-16"]);
+    expect(Object.keys(stamp.files)).toEqual(without(kits.s2, ["supabase-rls"]));
+  });
+
+  it('refuses a stamp whose "skills" is not a list of skill names, and writes nothing', () => {
+    for (const bad of ["anthropic-sdk", { "anthropic-sdk": true }, [1], ["Not a name"], null]) {
+      const stamp = { kit: "0.2.0", ref: "s2", commit: "0".repeat(40), syncedAt: new Date(0).toISOString(), skills: bad, files: {} };
+      const target = sandbox.makeTarget({ ...DEFAULT_TARGET_FILES, ".claude/hermod/VERSION.json": JSON.stringify(stamp) });
+      const before = snapshot(target);
+      expectRefused(
+        sandbox.syncJson(skillArgs(target, "s2")),
+        /^\.claude\/hermod\/VERSION\.json in the target has a "skills" entry that is not a list of skill names\. Restore it from git/,
+      );
+      expect(snapshot(target)).toEqual(before);
+    }
+  });
+});
+
 describe("sync: uncommitted changes and dry runs", () => {
   it("refuses uncommitted changes under .claude/ unless --allow-dirty", () => {
     const target = syncedTarget("v0.1.0");
@@ -893,6 +1222,7 @@ describe("sync: command line", () => {
     expect(run.status).toBe(0);
     expect(run.stdout).toMatch(/^Usage: node scripts\/sync\.mjs --target <repo> --ref <tag \| full commit sha>/);
     expect(run.stdout).toContain("--allow-dirty");
+    expect(run.stdout).toContain("  --skills <list>  The optional skills to install");
   });
 
   it("exits 2 with a plain message for bad arguments", () => {
@@ -903,6 +1233,16 @@ describe("sync: command line", () => {
       [["--target", target, "--ref", "v0.1.0", "--bogus"], /unknown option --bogus/],
       [["--target", target, "--ref", "v0.1.0", "extra"], /unexpected argument "extra"/],
       [["--target", target, "--ref", "v0.1.0", "--ref", "v0.2.0"], /--ref was given more than once/],
+      [["--target", target, "--ref", "v0.1.0", "--skills", ""], /--skills needs optional skill names/],
+      [["--target", target, "--ref", "v0.1.0", "--skills", " "], /--skills needs optional skill names/],
+      [["--target", target, "--ref", "v0.1.0", "--skills", "nextjs-16,,supabase-rls"], /--skills has an empty name in "nextjs-16,,supabase-rls"/],
+      [["--target", target, "--ref", "v0.1.0", "--skills", "nextjs-16,"], /--skills has an empty name/],
+      [["--target", target, "--ref", "v0.1.0", "--skills", "Nextjs_16"], /--skills: "Nextjs_16" is not a skill name/],
+      [["--target", target, "--ref", "v0.1.0", "--skills", "../reflect"], /--skills: "\.\.\/reflect" is not a skill name/],
+      [["--target", target, "--ref", "v0.1.0", "--skills", "none,nextjs-16"], /--skills none cannot be combined with skill names/],
+      [["--target", target, "--ref", "v0.1.0", "--skills", "nextjs-16,all"], /--skills all cannot be combined with skill names/],
+      [["--target", target, "--ref", "v0.1.0", "--skills", "nextjs-16, nextjs-16"], /--skills names nextjs-16 more than once/],
+      [["--target", target, "--ref", "v0.1.0", "--skills", "none", "--skills", "all"], /--skills was given more than once/],
     ];
     for (const [argv, message] of cases) {
       const run = sandbox.sync(argv);
@@ -1098,5 +1438,35 @@ describe("sync: pure functions", () => {
     expect(sync.sameContent(Buffer.from("one\rtwo\r"), sha256(lf))).toBe(false);
     expect(sync.sameContent(Buffer.from("one\r\ntwo\r\nthree\r\n"), sha256(lf))).toBe(false);
     expect(sync.crlfToLf(Buffer.from("a\r\r\nb\r\n"))).toEqual(Buffer.from("a\r\nb\n"));
+  });
+});
+
+describe("sync: this repository's kit/skills.json", () => {
+  const repo = fileURLToPath(new URL("../../", import.meta.url));
+  const skillsDir = path.join(repo, "kit", "files", ".claude", "skills");
+
+  it("lists only existing kit skill folders, and reflect and curate are core", async () => {
+    const folders = readdirSync(skillsDir, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name)
+      .sort();
+    const data = readFileSync(path.join(repo, "kit", "skills.json"));
+    const parsed = JSON.parse(data.toString("utf8")) as { optional: string[] };
+    expect(Object.keys(parsed)).toEqual(["optional"]);
+    expect(parsed.optional.length).toBeGreaterThan(0);
+    expect(new Set(parsed.optional).size).toBe(parsed.optional.length);
+    for (const name of parsed.optional) {
+      expect(folders, name).toContain(name);
+      expect(existsSync(path.join(skillsDir, name, "SKILL.md")), `${name}/SKILL.md`).toBe(true);
+    }
+    for (const name of ["reflect", "curate"]) {
+      expect(existsSync(path.join(skillsDir, name, "SKILL.md")), `${name}/SKILL.md`).toBe(true);
+      expect(parsed.optional, name).not.toContain(name);
+    }
+    // The same rules that sync applies to kit/skills.json at a ref.
+    const sync = (await import(pathToFileURL(SYNC_SCRIPT).href)) as {
+      parseKitSkills(data: Buffer, at: string, folders: string[]): string[];
+    };
+    expect(sync.parseKitSkills(data, "the working tree", folders)).toEqual([...parsed.optional].sort());
   });
 });

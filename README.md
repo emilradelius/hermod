@@ -67,6 +67,11 @@ node scripts/sync.mjs --target ../your-repo --ref v0.1.0
 pull request there. The sync never touches your CLAUDE.md, your own skills, your lessons or your settings, except the
 hook entries it owns. Details: [`docs/kit.md`](docs/kit.md).
 
+The core skills (`reflect`, `curate`) are always installed. The library skills that `kit/skills.json` lists as
+optional (`anthropic-sdk`, `nextjs-16`, `supabase-rls`) are installed only when you choose them, for example with
+`--skills nextjs-16,supabase-rls`, or `--skills all`, or `--skills none` to remove them again. A later sync keeps
+the same choice unless you pass `--skills` again.
+
 ## Develop
 
 ```bash

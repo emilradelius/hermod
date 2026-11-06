@@ -22,8 +22,9 @@ What it does:
 | Path | Owner | What happens on sync |
 | --- | --- | --- |
 | `.claude/hermod/hooks/`, `.claude/hermod/lib/`, `.claude/hermod/*.mjs`, this `README.md` | the kit | Updated to the new version. A file changed here is reported as a conflict and kept unless sync runs with `--force`. Change Hermod instead and sync again. |
-| `.claude/hermod/VERSION.json` | the kit | Rewritten: the kit version, ref, commit and a hash of every kit file. |
-| Kit skills in `.claude/skills/` (for example `reflect/` and `curate/`) | the kit | Updated like the scripts. |
+| `.claude/hermod/VERSION.json` | the kit | Rewritten: the kit version, ref, commit, the chosen optional skills and a hash of every kit file. |
+| Core kit skills in `.claude/skills/` (for example `reflect/` and `curate/`) | the kit | Updated like the scripts. |
+| Optional kit skills in `.claude/skills/` (for example `nextjs-16/`) | the kit, when chosen | Installed only when chosen with `--skills`; later syncs keep the choice. When a skill is no longer chosen, its files are deleted, or kept if they were changed here. |
 | `.claude/hermod/config.json` | this repository | Created once from a default if missing, never overwritten. |
 | `.claude/hermod/LESSONS.md` | this repository | Created once (header only), never overwritten. |
 | `.claude/hermod/checks/` | this repository | `checks/README.md` is created once; the checks are yours. |
@@ -86,6 +87,7 @@ defaults (see `DEFAULTS` in `lib/config.mjs`); unknown keys and invalid values a
 
 - Update: in a Hermod checkout, run
   `node scripts/sync.mjs --target <path to this repository> --ref vX.Y.Z`, review the diff and open a
-  pull request.
+  pull request. Add `--skills <names>` (or `all`, or `none`) to change which optional skills are
+  installed; without it the choice recorded in `VERSION.json` is kept.
 - Remove: delete the kit's files listed in `VERSION.json` and the hook entries in `.claude/settings.json`
   that point to `.claude/hermod/hooks/`. Your config, lessons and checks can stay or go.

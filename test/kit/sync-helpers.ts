@@ -29,6 +29,8 @@ export interface KitFixture {
   version: string;
   /** kit/settings.hooks.json: an object (written as JSON) or the exact text. */
   hooks: unknown;
+  /** kit/skills.json: an object (written as JSON) or the exact text; undefined writes no such file. */
+  skills?: unknown;
   /** Paths relative to kit/files/. */
   files: Tree;
   /** Paths relative to kit/seed/. */
@@ -50,6 +52,13 @@ export interface PlanJson {
   stamp: "create" | "update" | "unchanged";
 }
 
+export interface SkillsJson {
+  core: string[];
+  chosen: string[];
+  notChosen: string[];
+  from: "option" | "stamp" | "default";
+}
+
 export interface SyncJson {
   ok: boolean;
   applied: boolean;
@@ -61,6 +70,7 @@ export interface SyncJson {
   commit?: string;
   kit?: string;
   previous?: { kit: string; ref: string; commit: string; syncedAt: string } | null;
+  skills?: SkillsJson;
   plan: PlanJson | null;
   warnings?: string[];
 }
@@ -89,6 +99,8 @@ export interface Stamp {
   ref: string;
   commit: string;
   syncedAt: string;
+  /** The optional skills chosen (missing in a stamp written before optional skills existed). */
+  skills?: string[];
   files: Record<string, string>;
 }
 
@@ -133,11 +145,12 @@ export function snapshotOutsideClaude(root: string): Record<string, string> {
   return snapshot(root, (rel) => rel !== ".claude" && !rel.startsWith(".claude/"));
 }
 
-/** The posix paths (relative to root) of every file and link under root/sub, sorted. */
+/** The posix paths (relative to root) of every file and link under root/sub, sorted (sub may be nested). */
 export function listFiles(root: string, sub: string): string[] {
-  const entries = snapshot(root, (rel) => rel === sub || rel.startsWith(`${sub}/`));
+  const under = (rel: string) => rel === sub || rel.startsWith(`${sub}/`);
+  const entries = snapshot(root, (rel) => under(rel) || sub.startsWith(`${rel}/`));
   return Object.entries(entries)
-    .filter(([, entry]) => !entry.startsWith("dir "))
+    .filter(([rel, entry]) => under(rel) && !entry.startsWith("dir "))
     .map(([rel]) => rel)
     .sort();
 }
@@ -278,6 +291,11 @@ export function writeKit(dir: string, kit: KitFixture): void {
     VERSION: `${kit.version}\n`,
     "settings.hooks.json": typeof kit.hooks === "string" ? kit.hooks : `${JSON.stringify(kit.hooks, null, 2)}\n`,
   });
+  if (kit.skills !== undefined) {
+    writeTree(path.join(dir, "kit"), {
+      "skills.json": typeof kit.skills === "string" ? kit.skills : `${JSON.stringify(kit.skills, null, 2)}\n`,
+    });
+  }
   writeTree(dir, kit.other ?? {});
 }
 
@@ -363,4 +381,41 @@ export function kitV2(): KitFixture {
 /** The target paths of a kit's files, sorted. */
 export function kitPaths(kit: KitFixture): string[] {
   return Object.keys(kit.files).sort();
+}
+
+/** The fixture's core skills, and its library skills (like the real kit's, but the tests' own copies). */
+export const CORE_SKILLS = ["curate", "reflect"];
+export const OPTIONAL_SKILLS = ["anthropic-sdk", "nextjs-16", "supabase-rls"];
+
+function skillText(name: string, body: string): string {
+  return `---\nname: ${name}\ndescription: Fixture skill ${name}.\n---\n\n${body}\n`;
+}
+
+/**
+ * Kit v1 with two core skills and three library skills, two of them with a references/ file. `skills` is
+ * kit/skills.json (undefined: no such file, so every skill is core); `body` is the text of every SKILL.md, so that
+ * a later version can change them all.
+ */
+export function skillsKit(version: string, skills: unknown, body = "Body v1."): KitFixture {
+  const v1 = kitV1();
+  return {
+    ...v1,
+    version,
+    skills,
+    files: {
+      ...v1.files,
+      ".claude/skills/reflect/SKILL.md": skillText("reflect", body),
+      ".claude/skills/curate/SKILL.md": skillText("curate", body),
+      ".claude/skills/anthropic-sdk/SKILL.md": skillText("anthropic-sdk", body),
+      ".claude/skills/anthropic-sdk/references/tool-loop.md": "# Tool loop\n",
+      ".claude/skills/nextjs-16/SKILL.md": skillText("nextjs-16", body),
+      ".claude/skills/nextjs-16/references/caching.md": "# Caching\n",
+      ".claude/skills/supabase-rls/SKILL.md": skillText("supabase-rls", body),
+    },
+  };
+}
+
+/** The target paths of a kit's files that belong to these skills, sorted. */
+export function skillPaths(kit: KitFixture, names: string[]): string[] {
+  return kitPaths(kit).filter((rel) => names.some((name) => rel.startsWith(`.claude/skills/${name}/`)));
 }

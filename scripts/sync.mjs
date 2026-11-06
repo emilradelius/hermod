@@ -2,17 +2,23 @@
 /**
  * Hermod kit sync: copies the kit into a target repository at a pinned ref. A person runs it; no hook ever does.
  *
- *   node scripts/sync.mjs --target <repo> --ref <tag | full 40-hex commit sha>
+ *   node scripts/sync.mjs --target <repo> --ref <tag | full 40-hex commit sha> [--skills <names | none | all>]
  *                         [--source <hermod repo>] [--dry-run] [--force] [--allow-dirty] [--json]
  *
  * - The ref is resolved in the hermod repository (--source; default: the repository that contains this script).
  *   Branch names and short shas are refused: they can point at different commits over time.
- * - kit/files, kit/seed, kit/VERSION and kit/settings.hooks.json are read AT THAT COMMIT with `git ls-tree -r -z`
- *   and `git show <commit>:<path>`, byte for byte (each blob is checked against its object id), never from the
- *   working tree or the index.
+ * - kit/files, kit/seed, kit/VERSION, kit/settings.hooks.json and kit/skills.json are read AT THAT COMMIT with
+ *   `git ls-tree -r -z` and `git show <commit>:<path>`, byte for byte (each blob is checked against its object id),
+ *   never from the working tree or the index.
  * - kit/files/<path> is copied to <target>/<path>; every such path is under .claude/. The stamp
  *   (.claude/hermod/VERSION.json) records which files the kit wrote and their sha256, so local edits and the
  *   repository's own files are never overwritten (local edits only with --force).
+ * - Skills: every folder in kit/files/.claude/skills/ is a core skill, always synced, unless kit/skills.json
+ *   ({"optional": [names]}) lists it as optional; a ref without that file has no optional skills. An optional
+ *   skill is synced only when it is chosen with --skills. The stamp records the choice ("skills"), and a run
+ *   without --skills keeps the last sync's choice (none on a first install); an optional skill that the last sync
+ *   installed stays chosen, also when it was a core skill then. The files of a skill that is not chosen are left
+ *   out of the plan, so they are deleted like files the kit no longer has (and kept when changed locally).
  * - kit/seed/<path> is created only when missing; the repository owns it from then on.
  * - The kit's hook entries are merged into .claude/settings.json; every other key, hook and order stays as it was.
  * - All or nothing: the whole plan is computed and checked first. On a conflict nothing is written (exit 1).
@@ -54,6 +60,13 @@ const KIT_FILES_DIR = "kit/files/";
 const KIT_SEED_DIR = "kit/seed/";
 const KIT_VERSION_FILE = "kit/VERSION";
 const KIT_HOOKS_FILE = "kit/settings.hooks.json";
+/** Lists the kit's optional skills; read at the ref like kit/VERSION, never synced. */
+const KIT_SKILLS_FILE = "kit/skills.json";
+/** Where skills live in the target (and in kit/files/). */
+const SKILLS_DIR = ".claude/skills/";
+const SKILL_NAME = /^[a-z0-9]+(-[a-z0-9]+)*$/;
+/** Values of --skills that are not skill names. */
+const SKILLS_KEYWORDS = ["none", "all"];
 
 /** Lower-case paths that belong to the repository: the kit may seed them but never own them. */
 const REPOSITORY_FILES = [".claude/hermod/config.json", ".claude/hermod/lessons.md"];
@@ -264,10 +277,16 @@ function toAbsolute(root, rel) {
 // ---------------------------------------------------------------------------------------------------------------
 
 /**
+ * The value of --skills: "none", "all", or optional skill names (sorted, without duplicates).
+ * @typedef {"none" | "all" | string[]} SkillsChoice
+ */
+
+/**
  * @typedef {object} Options
  * @property {string} target the target repository
  * @property {string} ref a tag or a full commit sha in the source repository
  * @property {string | undefined} source the hermod repository (undefined: the one that contains this script)
+ * @property {SkillsChoice | undefined} skills the optional skills to sync (undefined: keep the last sync's choice)
  * @property {boolean} dryRun
  * @property {boolean} force overwrite kit files that were changed locally
  * @property {boolean} allowDirty run although the target has uncommitted changes under .claude/
@@ -288,6 +307,11 @@ Options:
                    Branch names and short shas are refused because they can move.
   --source <dir>   The hermod repository to read the kit from
                    (default: the repository that contains this script).
+  --skills <list>  The optional skills to install: names separated by commas (for example
+                   anthropic-sdk,nextjs-16), or none, or all. This replaces the earlier choice.
+                   Without --skills the last sync's choice is kept (none on a first install).
+                   kit/skills.json at the ref lists the optional skills; every other kit skill
+                   is core and always installed.
   --dry-run        Print the plan and write nothing.
   --force          Overwrite kit files that were changed in the target since the last sync.
   --allow-dirty    Run even if the target has uncommitted changes under .claude/.
@@ -311,6 +335,7 @@ export function parseOptions(argv) {
         target: { type: "string" },
         ref: { type: "string" },
         source: { type: "string" },
+        skills: { type: "string" },
         "dry-run": { type: "boolean" },
         force: { type: "boolean" },
         "allow-dirty": { type: "boolean" },
@@ -338,6 +363,7 @@ export function parseOptions(argv) {
     target: values.target ?? "",
     ref: values.ref ?? "",
     source: values.source,
+    skills: undefined,
     dryRun: values["dry-run"] === true,
     force: values.force === true,
     allowDirty: values["allow-dirty"] === true,
@@ -348,7 +374,34 @@ export function parseOptions(argv) {
   if (options.target === "") throw new UsageError("--target <repo> is required");
   if (options.ref === "") throw new UsageError("--ref <tag | full commit sha> is required");
   if (options.source === "") throw new UsageError("--source needs a folder");
+  if (values.skills !== undefined) options.skills = parseSkillsOption(values.skills);
   return options;
+}
+
+/**
+ * Parses the value of --skills: "none", "all", or skill names separated by commas (spaces around a name are
+ * allowed). Whether a name is an optional skill of the kit is checked later, against the kit at the ref.
+ * @param {string} value
+ * @returns {SkillsChoice}
+ */
+export function parseSkillsOption(value) {
+  const names = value.split(",").map((name) => name.trim());
+  if (names.length === 1 && names[0] === "") {
+    throw new UsageError("--skills needs optional skill names separated by commas, or none, or all");
+  }
+  if (names.length === 1 && (names[0] === "none" || names[0] === "all")) return names[0];
+  /** @type {Set<string>} */
+  const seen = new Set();
+  for (const name of names) {
+    if (name === "") throw new UsageError(`--skills has an empty name in ${JSON.stringify(value)}`);
+    if (SKILLS_KEYWORDS.includes(name)) throw new UsageError(`--skills ${name} cannot be combined with skill names`);
+    if (!SKILL_NAME.test(name)) {
+      throw new UsageError(`--skills: ${JSON.stringify(name)} is not a skill name (lower-case letters, digits and hyphens)`);
+    }
+    if (seen.has(name)) throw new UsageError(`--skills names ${name} more than once`);
+    seen.add(name);
+  }
+  return [...seen].sort(byCodeUnit);
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -690,6 +743,58 @@ export function parseKitHooks(data, at) {
 }
 
 /**
+ * The skill folders among target paths: the <name> of every .claude/skills/<name>/... path, sorted.
+ * @param {Iterable<string>} paths
+ * @returns {string[]}
+ */
+function skillFolders(paths) {
+  /** @type {Set<string>} */
+  const names = new Set();
+  for (const rel of paths) {
+    if (!rel.startsWith(SKILLS_DIR)) continue;
+    const slash = rel.indexOf("/", SKILLS_DIR.length);
+    if (slash !== -1) names.add(rel.slice(SKILLS_DIR.length, slash));
+  }
+  return [...names].sort(byCodeUnit);
+}
+
+/**
+ * Parses and checks kit/skills.json: { "optional": ["<skill>", ...] }, the skills that a target gets only when it
+ * chooses them with --skills. Each name must be a skill folder of kit/files/.claude/skills/ at the same commit.
+ * @param {Buffer} data
+ * @param {string} at the ref and commit, for messages
+ * @param {string[]} folders the skill folders of kit/files/.claude/skills/ at that commit
+ * @returns {string[]} the optional skills, sorted
+ */
+export function parseKitSkills(data, at, folders) {
+  const fail = (/** @type {string} */ why) => new SyncError(`${KIT_SKILLS_FILE} at ${at} ${why}`);
+  const text = decodeUtf8(data);
+  let parsed;
+  try {
+    parsed = JSON.parse(stripBom(text ?? ""));
+  } catch (error) {
+    throw fail(`is not valid JSON${jsonErrorPlace(error)}.`);
+  }
+  if (!isPlainObject(parsed) || !Array.isArray(parsed.optional)) {
+    throw fail('must be an object with an "optional" list of skill names, such as {"optional": ["nextjs-16"]}.');
+  }
+  const extra = Object.keys(parsed).filter((key) => key !== "optional");
+  if (extra.length > 0) throw fail(`may only contain "optional" (found ${extra.map((key) => JSON.stringify(key)).join(", ")}).`);
+  /** @type {Set<string>} */
+  const optional = new Set();
+  for (const name of parsed.optional) {
+    if (typeof name !== "string" || !SKILL_NAME.test(name)) {
+      throw fail(`lists ${JSON.stringify(name)}, which is not a skill name (lower-case letters, digits and hyphens).`);
+    }
+    if (SKILLS_KEYWORDS.includes(name)) throw fail(`lists "${name}", which cannot be a skill name: --skills ${name} has its own meaning.`);
+    if (optional.has(name)) throw fail(`lists "${name}" more than once.`);
+    if (!folders.includes(name)) throw fail(`lists "${name}", but kit/files/${SKILLS_DIR}${name}/ does not exist at that commit.`);
+    optional.add(name);
+  }
+  return [...optional].sort(byCodeUnit);
+}
+
+/**
  * Refuses kit paths that are the same file on a case-insensitive file system (Windows, macOS), or a file that is
  * also a folder of another path.
  * @param {string[]} paths
@@ -720,7 +825,23 @@ function checkPathCollisions(paths, at) {
  * @property {Map<string, Buffer>} files target path -> content, from kit/files
  * @property {Map<string, Buffer>} seeds target path -> content, from kit/seed
  * @property {Record<string, unknown[]>} hooks the "hooks" object of kit/settings.hooks.json
+ * @property {KitSkills} skills the skill folders of kit/files/.claude/skills/
  */
+
+/**
+ * @typedef {object} KitSkills
+ * @property {string[]} core always synced (every skill folder that kit/skills.json does not list), sorted
+ * @property {string[]} optional synced only when chosen (kit/skills.json; none without that file), sorted
+ */
+
+/**
+ * A ref and its commit, for messages.
+ * @param {string} ref
+ * @param {string} commit
+ */
+function describeRef(ref, commit) {
+  return `${ref} (${commit.slice(0, 12)})`;
+}
 
 /**
  * Reads and checks the kit at a commit of the hermod repository (never the working tree).
@@ -730,7 +851,7 @@ function checkPathCollisions(paths, at) {
  * @returns {Kit}
  */
 export function readKitAt(sourceDir, commit, ref) {
-  const at = `${ref} (${commit.slice(0, 12)})`;
+  const at = describeRef(ref, commit);
   const listed = git(sourceDir, ["ls-tree", "-r", "-z", "--full-tree", commit, "--", "kit"]);
   if (!listed.ok) throw new SyncError(`could not list kit/ at ${at}: ${listed.stderr}`);
   /** @type {Map<string, Buffer>} */
@@ -741,17 +862,21 @@ export function readKitAt(sourceDir, commit, ref) {
   let versionData = null;
   /** @type {Buffer | null} */
   let hooksData = null;
+  /** @type {Buffer | null} */
+  let skillsData = null;
   for (const entry of parseLsTree(listed.stdout)) {
     const isFile = entry.path.startsWith(KIT_FILES_DIR);
     const isSeed = entry.path.startsWith(KIT_SEED_DIR);
     const isVersion = entry.path === KIT_VERSION_FILE;
     const isHooks = entry.path === KIT_HOOKS_FILE;
-    if (!isFile && !isSeed && !isVersion && !isHooks) continue; // e.g. kit/README.md is not synced
+    const isSkills = entry.path === KIT_SKILLS_FILE;
+    if (!isFile && !isSeed && !isVersion && !isHooks && !isSkills) continue; // e.g. kit/README.md is not synced
     if (entry.type !== "blob" || (entry.mode !== "100644" && entry.mode !== "100755")) {
       throw new SyncError(`${entry.path} at ${at} is ${describeMode(entry.mode)}; the kit may hold only regular files.`);
     }
     if (isVersion) versionData = readBlob(sourceDir, commit, entry);
     else if (isHooks) hooksData = readBlob(sourceDir, commit, entry);
+    else if (isSkills) skillsData = readBlob(sourceDir, commit, entry);
     else {
       const rel = entry.path.slice(isFile ? KIT_FILES_DIR.length : KIT_SEED_DIR.length);
       const problem = isFile ? kitFileProblem(rel) : seedProblem(rel);
@@ -764,7 +889,12 @@ export function readKitAt(sourceDir, commit, ref) {
   if (versionData === null) throw new SyncError(`${KIT_VERSION_FILE} is missing at ${at}.`);
   if (hooksData === null) throw new SyncError(`${KIT_HOOKS_FILE} is missing at ${at}.`);
   checkPathCollisions([...files.keys(), ...seeds.keys()], at);
-  return { version: parseKitVersion(versionData, at), files, seeds, hooks: parseKitHooks(hooksData, at) };
+  const version = parseKitVersion(versionData, at);
+  const hooks = parseKitHooks(hooksData, at);
+  const folders = skillFolders(files.keys());
+  const optional = skillsData === null ? [] : parseKitSkills(skillsData, at, folders);
+  const core = folders.filter((name) => !optional.includes(name));
+  return { version, files, seeds, hooks, skills: { core, optional } };
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -883,6 +1013,7 @@ function uncommittedClaudePaths(root) {
  * @property {string} ref
  * @property {string} commit
  * @property {string} syncedAt
+ * @property {string[] | null} skills the optional skills chosen, sorted (null: a stamp from before optional skills)
  * @property {Map<string, string>} files target path -> sha256 of what sync wrote
  */
 
@@ -919,9 +1050,97 @@ export function parseStamp(data) {
     }
     files.set(rel, hash);
   }
+  /** @type {string[] | null} */
+  let skills = null;
+  if (Object.hasOwn(parsed, "skills")) {
+    const list = parsed.skills;
+    if (!Array.isArray(list) || !list.every((name) => typeof name === "string" && SKILL_NAME.test(name))) {
+      throw new SyncError(`${STAMP_PATH} in the target has a "skills" entry that is not a list of skill names. ${fix}`);
+    }
+    skills = [...new Set(/** @type {string[]} */ (list))].sort(byCodeUnit);
+  }
   const record = parsed;
   const field = (/** @type {string} */ name) => (typeof record[name] === "string" ? String(record[name]) : "");
-  return { kit: field("kit"), ref: field("ref"), commit: field("commit"), syncedAt: field("syncedAt"), files };
+  return { kit: field("kit"), ref: field("ref"), commit: field("commit"), syncedAt: field("syncedAt"), skills, files };
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Choosing the optional skills
+// ---------------------------------------------------------------------------------------------------------------
+
+/**
+ * @typedef {object} SkillSelection
+ * @property {string[]} core the kit's core skills (always synced)
+ * @property {string[]} chosen the optional skills that are synced, sorted
+ * @property {string[]} notChosen the optional skills that are left out, sorted
+ * @property {"option" | "stamp" | "default"} from where the choice comes from: --skills, the previous stamp, or
+ *   the default of a first install (none)
+ */
+
+/**
+ * Decides which optional skills are synced. With --skills: the names it gives (or all, or none); a name that is
+ * not an optional skill of the kit is refused. Without it: the last sync's choice, which is the stamp's "skills"
+ * plus every optional skill that the stamp lists files of, so that a re-sync never drops a skill that was
+ * installed (one that was a core skill then, or from a stamp written before "skills" existed). On a first
+ * install: none.
+ * @param {KitSkills} kitSkills
+ * @param {SkillsChoice | undefined} requested
+ * @param {Stamp | null} previous
+ * @param {string} at the ref and commit, for messages
+ * @returns {SkillSelection}
+ */
+export function chooseSkills(kitSkills, requested, previous, at) {
+  const { core, optional } = kitSkills;
+  /** @type {Set<string>} */
+  let chosen;
+  /** @type {SkillSelection["from"]} */
+  let from = "option";
+  if (requested === "all") chosen = new Set(optional);
+  else if (requested === "none") chosen = new Set();
+  else if (requested !== undefined) {
+    const wrong = requested.filter((name) => !optional.includes(name));
+    if (wrong.length > 0) throw new SyncError(notOptionalMessage(wrong, kitSkills, at));
+    chosen = new Set(requested);
+  } else if (previous === null) {
+    chosen = new Set();
+    from = "default";
+  } else {
+    chosen = new Set([...(previous.skills ?? []), ...skillFolders(previous.files.keys())]);
+    from = "stamp";
+  }
+  return {
+    core,
+    chosen: optional.filter((name) => chosen.has(name)),
+    notChosen: optional.filter((name) => !chosen.has(name)),
+    from,
+  };
+}
+
+/**
+ * Why these --skills names cannot be chosen, and which optional skills can.
+ * @param {string[]} wrong names that are not optional skills of the kit
+ * @param {KitSkills} kitSkills
+ * @param {string} at the ref and commit
+ */
+function notOptionalMessage(wrong, kitSkills, at) {
+  const names = wrong.map((name) => JSON.stringify(name)).join(", ");
+  const verb = wrong.length === 1 ? "is not an optional skill" : "are not optional skills";
+  const core = wrong.filter((name) => kitSkills.core.includes(name));
+  const coreNote = core.length === 0 ? "" : `; ${core.join(", ")} ${core.length === 1 ? "is a core skill" : "are core skills"}, always synced`;
+  const available = kitSkills.optional.length > 0 ? kitSkills.optional.join(", ") : "none";
+  return `--skills: ${names} ${verb} of the kit at ${at}${coreNote}. Optional skills: ${available}.`;
+}
+
+/**
+ * The kit files without the files of the optional skills that are not chosen.
+ * @param {Map<string, Buffer>} files
+ * @param {string[]} skipped skill names
+ * @returns {Map<string, Buffer>}
+ */
+function withoutSkills(files, skipped) {
+  if (skipped.length === 0) return files;
+  const prefixes = skipped.map((name) => `${SKILLS_DIR}${name}/`);
+  return new Map([...files].filter(([rel]) => !prefixes.some((prefix) => rel.startsWith(prefix))));
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -955,9 +1174,10 @@ const REASON_CHANGED_LOCALLY =
  * @param {Map<string, string> | null} input.previous the previous stamp's files (null on a first install)
  * @param {(rel: string) => TargetState} input.inspect
  * @param {boolean} input.force
+ * @param {string[]} [input.notChosen] optional skills this sync leaves out (their files are not in `files`)
  * @returns {FilePlan}
  */
-export function planFiles({ files, seeds, previous, inspect, force }) {
+export function planFiles({ files, seeds, previous, inspect, force, notChosen = [] }) {
   /** @type {FilePlan} */
   const plan = {
     add: [],
@@ -989,18 +1209,22 @@ export function planFiles({ files, seeds, previous, inspect, force }) {
       plan.forced.push(rel);
     } else plan.conflict.push({ path: rel, reason: REASON_CHANGED_LOCALLY });
   }
+  /** @param {string} rel */
+  const droppedSkill = (rel) => notChosen.find((name) => rel.startsWith(`${SKILLS_DIR}${name}/`));
   for (const [rel, previousHash] of [...before.entries()].sort(([a], [b]) => byCodeUnit(a, b))) {
     if (files.has(rel)) continue;
     const state = inspect(rel);
     if (state.kind === "missing") continue;
+    const skill = droppedSkill(rel);
+    const gone = skill ? `belongs to the optional skill ${skill}, which this sync does not install (--skills)` : "is no longer in the kit";
     if (seeds.has(rel)) plan.kept.push({ path: rel, reason: "is a seed from this kit version on, so the repository owns it now" });
     else if (state.kind !== "file") {
-      plan.kept.push({ path: rel, reason: `is no longer in the kit; it was left in place because it ${state.reason}` });
+      plan.kept.push({ path: rel, reason: `${gone}; it was left in place because it ${state.reason}` });
     } else if (sameContent(state.data, previousHash)) plan.delete.push(rel);
     else {
       plan.kept.push({
         path: rel,
-        reason: "is no longer in the kit but was changed in this repository, so it was left in place (and is no longer tracked)",
+        reason: `${gone} but was changed in this repository, so it was left in place (and is no longer tracked)`,
       });
     }
   }
@@ -1125,22 +1349,33 @@ function sameEntries(a, b) {
 }
 
 /**
+ * @param {string[]} a
+ * @param {string[]} b
+ */
+function sameList(a, b) {
+  return a.length === b.length && a.every((item, index) => item === b[index]);
+}
+
+/**
  * The new stamp. It is written when its content changes, and also when anything else is written (so that
  * syncedAt says when the target last changed); never on a run that changes nothing.
  * @param {Stamp | null} previous
- * @param {{ kit: string, ref: string, commit: string, files: Map<string, string> }} next
+ * @param {{ kit: string, ref: string, commit: string, skills: string[], files: Map<string, string> }} next
  * @param {boolean} anythingElse whether other files are written
  * @param {Date} now
  * @returns {WritePlan}
  */
 function planStamp(previous, next, anythingElse, now) {
   const files = Object.fromEntries([...next.files].sort(([a], [b]) => byCodeUnit(a, b)));
-  const text = `${JSON.stringify({ kit: next.kit, ref: next.ref, commit: next.commit, syncedAt: now.toISOString(), files }, null, 2)}\n`;
+  const stamp = { kit: next.kit, ref: next.ref, commit: next.commit, syncedAt: now.toISOString(), skills: next.skills, files };
+  const text = `${JSON.stringify(stamp, null, 2)}\n`;
   if (previous === null) return { action: "create", text };
   const same =
     previous.kit === next.kit &&
     previous.ref === next.ref &&
     previous.commit === next.commit &&
+    previous.skills !== null &&
+    sameList(previous.skills, next.skills) &&
     sameEntries(previous.files, next.files);
   return { action: same && !anythingElse ? "unchanged" : "update", text };
 }
@@ -1275,6 +1510,7 @@ function applyPlan(root, kit, files, settings, stamp) {
  * @property {string} commit
  * @property {string} kit the kit version
  * @property {{ kit: string, ref: string, commit: string, syncedAt: string } | null} previous the previous stamp
+ * @property {SkillSelection} skills which skills are synced
  * @property {PlanSummary} plan
  * @property {string[]} warnings
  * @property {string} [error]
@@ -1322,11 +1558,24 @@ export function runSync(options, now = new Date()) {
     throw new SyncError(`${STAMP_PATH} in the target ${stampState.reason}.`);
   }
   const previous = stampState.kind === "file" ? parseStamp(stampState.data) : null;
-  const files = planFiles({ files: kit.files, seeds: kit.seeds, previous: previous?.files ?? null, inspect, force: options.force });
+  const skills = chooseSkills(kit.skills, options.skills, previous, describeRef(options.ref, commit));
+  const files = planFiles({
+    files: withoutSkills(kit.files, skills.notChosen),
+    seeds: kit.seeds,
+    previous: previous?.files ?? null,
+    inspect,
+    force: options.force,
+    notChosen: skills.notChosen,
+  });
   const settings = planSettings(inspect, kit.hooks);
   const writesFiles = files.add.length + files.update.length + files.delete.length + files.seed.length > 0;
   const anythingElse = writesFiles || settings.action !== "unchanged";
-  const stamp = planStamp(previous, { kit: kit.version, ref: options.ref, commit, files: files.manifest }, anythingElse, now);
+  const stamp = planStamp(
+    previous,
+    { kit: kit.version, ref: options.ref, commit, skills: skills.chosen, files: files.manifest },
+    anythingElse,
+    now,
+  );
   /** @type {string[]} */
   const warnings = [];
   if (previous && compareVersions(kit.version, previous.kit) < 0) {
@@ -1346,6 +1595,7 @@ export function runSync(options, now = new Date()) {
     commit,
     kit: kit.version,
     previous: previous && { kit: previous.kit, ref: previous.ref, commit: previous.commit, syncedAt: previous.syncedAt },
+    skills,
     plan: {
       add: files.add,
       update: files.update,
@@ -1373,6 +1623,29 @@ function describeAction(action) {
   return action === "create" ? "create" : action === "update" ? "update" : "unchanged";
 }
 
+/** Where the choice of optional skills came from, for people. */
+const SKILLS_FROM = {
+  option: "from --skills",
+  stamp: "as in the last sync",
+  default: "the default on a first install",
+};
+
+/**
+ * The skills lines of the human output.
+ * @param {SkillSelection} skills
+ * @returns {string[]}
+ */
+function formatSkills(skills) {
+  const names = (/** @type {string[]} */ list) => (list.length > 0 ? list.join(", ") : "none");
+  const lines = [`  skills  core: ${names(skills.core)}`];
+  if (skills.chosen.length + skills.notChosen.length === 0) lines.push("          optional: none");
+  else {
+    lines.push(`          optional, chosen: ${names(skills.chosen)} (${SKILLS_FROM[skills.from]})`);
+    lines.push(`          optional, not chosen: ${names(skills.notChosen)}`);
+  }
+  return lines;
+}
+
 /**
  * The plan and the outcome, for people.
  * @param {SyncResult} result
@@ -1388,6 +1661,7 @@ export function formatResult(result) {
       ? `  before  kit ${previous.kit || "?"} at ${previous.ref || "?"} (${previous.commit.slice(0, 12) || "?"})`
       : "  before  no stamp (first install)",
   );
+  lines.push(...formatSkills(result.skills));
   lines.push("");
   const row = (/** @type {string} */ label, /** @type {string} */ text) => lines.push(`  ${label.padEnd(10)} ${text}`);
   for (const rel of plan.add) row("add", rel);
