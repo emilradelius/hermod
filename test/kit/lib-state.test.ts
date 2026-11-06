@@ -93,18 +93,20 @@ describe("session files", () => {
     const repo = makeRepo({ git: false });
     expect(st.readSessionStart(repo.root, "none")).toBeNull();
     expect(st.readBrief(repo.root, "none")).toBeNull();
-    expect(st.readStopState(repo.root, "none")).toEqual({ fingerprints: [], blocks: 0, lastBlockAt: null });
+    expect(st.readStopState(repo.root, "none")).toEqual({ fingerprints: [], keys: [], blocks: 0, lastBlockAt: null });
     const dir = st.ensureSessionDir(repo.root, "bad");
     writeFileSync(path.join(dir, "session-start.json"), "{not json");
     writeFileSync(path.join(dir, "stop.json"), JSON.stringify({ fingerprints: ["a", 1], blocks: -3 }));
     expect(st.readSessionStart(repo.root, "bad")).toBeNull();
-    expect(st.readStopState(repo.root, "bad")).toEqual({ fingerprints: ["a"], blocks: 0, lastBlockAt: null });
+    expect(st.readStopState(repo.root, "bad")).toEqual({ fingerprints: ["a"], keys: [], blocks: 0, lastBlockAt: null });
   });
 
   it("stop state dedupes fingerprints", () => {
     const repo = makeRepo({ git: false });
     st.writeStopState(repo.root, "s", { fingerprints: ["x", "x", "y"], blocks: 2, lastBlockAt: "t" });
-    expect(st.readStopState(repo.root, "s")).toEqual({ fingerprints: ["x", "y"], blocks: 2, lastBlockAt: "t" });
+    expect(st.readStopState(repo.root, "s")).toEqual({ fingerprints: ["x", "y"], keys: [], blocks: 2, lastBlockAt: "t" });
+    st.writeStopState(repo.root, "k", { fingerprints: ["x"], keys: ["missing:b", "check:a", "check:a"], blocks: 1, lastBlockAt: "t" });
+    expect(st.readStopState(repo.root, "k").keys).toEqual(["check:a", "missing:b"]);
   });
 
   it("refuses session file names that could leave the folder", () => {

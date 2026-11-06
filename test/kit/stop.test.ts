@@ -285,6 +285,38 @@ describe("Stop hook: block limits", () => {
     expect(stopState(repo)!.fingerprints).toHaveLength(2);
   });
 
+  it("blocks at most once per reason: an old reason never blocks again when a new one joins it", () => {
+    const repo = repoWith({
+      ".claude/hermod/config.json": config({ maxBlocksPerSession: 5 }),
+      [`${CHECKS_DIR}/no-console-log.mjs`]: FIXTURE,
+    });
+    startSession(repo);
+    repo.write("src/app.ts", "export const a = 2;\n");
+    expect(blocked(stop(repo))).toMatch(/docs\/PROGRESS\.md/); // 1: the progress file is missing
+    repo.write("src/app.ts", 'export const a = 2;\nconsole.log("x");\n');
+    expect(blocked(stop(repo))).toMatch(/no-console-log/); // 2: a new reason (the check) joins the old one
+    repo.write("src/b.ts", 'console.log("y");\n');
+    passed(stop(repo)); // 3: the check's message changed, but no reason is new
+    repo.write("src/c.ts", "export const c = 3;\n");
+    passed(stop(repo)); // 4: more code, still the same two reasons
+    repo.write("docs/PROGRESS.md", "# Progress\nUpdated.\n");
+    passed(stop(repo)); // 5: only the check is left, and it has blocked already
+    expect(stopState(repo)).toMatchObject({ blocks: 2 });
+    expect((stopState(repo) as unknown as { keys: string[] }).keys).toEqual(["check:no-console-log", "missing:docs/PROGRESS.md"]);
+  });
+
+  it("reads block state written before reason keys existed", () => {
+    const repo = repoWith({ ".claude/hermod/config.json": config({ maxBlocksPerSession: 5 }) });
+    startSession(repo);
+    repo.write("src/app.ts", "export const a = 2;\n");
+    blocked(stop(repo));
+    const file = path.join(stateLib.sessionDir(repo.root, "sess-1"), "stop.json");
+    const old = JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>;
+    delete old.keys;
+    writeFileSync(file, JSON.stringify(old));
+    passed(stop(repo)); // the same set of reasons, recognised by its fingerprint
+  });
+
   it("respects maxBlocksPerSession = 1", () => {
     const repo = repoWith({ ".claude/hermod/config.json": config({ maxBlocksPerSession: 1 }) });
     startSession(repo);

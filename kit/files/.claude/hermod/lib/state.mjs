@@ -40,6 +40,7 @@ const WINDOWS_RESERVED = /^(?:con|prn|aux|nul|com\d|lpt\d)(?:\..*)?$/i;
 /**
  * @typedef {object} StopState
  * @property {string[]} fingerprints reasons already blocked for (sha256 of the sorted reasons)
+ * @property {string[]} [keys] every reason key that has already caused a block (each reason blocks at most once)
  * @property {number} blocks how many times the Stop hook blocked in this session
  * @property {string | null} lastBlockAt ISO time
  */
@@ -248,10 +249,12 @@ export function writeBrief(root, sessionId, text) {
  */
 export function readStopState(root, sessionId) {
   const v = readSessionJson(root, sessionId, STOP_FILE);
-  if (!isPlainObject(v)) return { fingerprints: [], blocks: 0, lastBlockAt: null };
+  if (!isPlainObject(v)) return { fingerprints: [], keys: [], blocks: 0, lastBlockAt: null };
   const fingerprints = Array.isArray(v.fingerprints) ? v.fingerprints.filter((f) => typeof f === "string") : [];
+  // State written before keys existed has only fingerprints; it is read as "no key blocked yet".
+  const keys = Array.isArray(v.keys) ? v.keys.filter((k) => typeof k === "string") : [];
   const blocks = typeof v.blocks === "number" && Number.isInteger(v.blocks) && v.blocks >= 0 ? v.blocks : 0;
-  return { fingerprints, blocks, lastBlockAt: textOrNull(v.lastBlockAt) };
+  return { fingerprints, keys, blocks, lastBlockAt: textOrNull(v.lastBlockAt) };
 }
 
 /**
@@ -262,6 +265,7 @@ export function readStopState(root, sessionId) {
 export function writeStopState(root, sessionId, state) {
   writeSessionJson(root, sessionId, STOP_FILE, {
     fingerprints: [...new Set(state.fingerprints ?? [])],
+    keys: [...new Set(state.keys ?? [])].sort(),
     blocks: state.blocks ?? 0,
     lastBlockAt: state.lastBlockAt ?? null,
   });

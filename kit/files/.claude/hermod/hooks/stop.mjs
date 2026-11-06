@@ -8,8 +8,10 @@
  *
  * It can never loop:
  * - it does nothing when stop_hook_active is true (Claude is already continuing because of a Stop hook);
- * - it blocks at most once per set of reasons (a fingerprint saved in .local/sessions/<id>/stop.json, written
- *   before the block is printed) and at most ritual.maxBlocksPerSession times per session;
+ * - it blocks at most once per reason: every reason key that caused a block is saved in
+ *   .local/sessions/<id>/stop.json (written before the block is printed), and a later Stop blocks only when a
+ *   reason is new; a check's key is its id, so a failing check whose message changes does not block twice;
+ *   and it blocks at most ritual.maxBlocksPerSession times per session;
  * - any error is logged to .local/errors.log and the hook exits 0 without blocking (fail open).
  *
  * Changed files this session: everything that differs between the HEAD saved at session start and the working
@@ -288,7 +290,7 @@ export async function decideStop(root, input) {
     });
     for (const r of blockingFailures(report.results)) {
       const message = (r.message ?? "failed").replace(/\s+/g, " ").trim();
-      reasons.push({ kind: "check", key: `check:${r.id}:${message}`, text: `${r.id}: ${message}` });
+      reasons.push({ kind: "check", key: `check:${r.id}`, text: `${r.id}: ${message}` });
     }
     for (const r of report.results) {
       if (r.level === "warn" && (r.status === "fail" || r.status === "error")) {
@@ -301,11 +303,18 @@ export async function decideStop(root, input) {
 
   const fingerprint = fingerprintOf(reasons);
   const state = readStopState(root, sessionId);
-  if (state.fingerprints.includes(fingerprint)) return pass("already blocked for these reasons", { ...more, fingerprint });
+  const blockedBefore = new Set(state.keys ?? []);
+  const fresh = [...new Set(reasons.map((r) => r.key))].filter((k) => !blockedBefore.has(k));
+  // Each reason blocks at most once: only a reason that has not blocked yet can block. (State from before keys
+  // existed has only fingerprints: the same set of reasons does not block twice.)
+  if (fresh.length === 0 || state.fingerprints.includes(fingerprint)) {
+    return pass("already blocked for these reasons", { ...more, fingerprint });
+  }
   if (state.blocks >= ritual.maxBlocksPerSession) return pass("block limit reached", { ...more, fingerprint });
   // Record first: if the state cannot be saved, this throws and the hook fails open (no block, so no loop).
   writeStopState(root, sessionId, {
     fingerprints: [...state.fingerprints, fingerprint],
+    keys: [...blockedBefore, ...fresh],
     blocks: state.blocks + 1,
     lastBlockAt: new Date().toISOString(),
   });
