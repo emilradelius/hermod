@@ -167,6 +167,8 @@ const WORKER_MEMORY_MB = 512;
  * @property {string[]} changedFiles
  * @property {CheckResult[]} results
  * @property {string[]} errors problems with the checks folder itself
+ * @property {string[]} [uncommitted] with committedOnly: files in the checks folder that differ from HEAD (then no
+ *   check runs, since a committed check could import or be one of them)
  */
 
 /**
@@ -177,7 +179,8 @@ const WORKER_MEMORY_MB = 512;
  * @property {number} [timeoutMs] per check (default CHECK_TIMEOUT_MS; capped at it)
  * @property {number} [deadlineMs] total budget: checks not started in time are skipped
  * @property {number} [concurrency] default DEFAULT_CONCURRENCY
- * @property {boolean} [committedOnly] run only check files present in HEAD (the Stop hook sets this)
+ * @property {boolean} [committedOnly] run only check files present in HEAD, and none at all while a file in the
+ *   checks folder differs from HEAD (the Stop hook sets this)
  */
 
 // ---------------------------------------------------------------------------------------------- helpers
@@ -686,7 +689,35 @@ export function listCheckFiles(root, dir = DEFAULT_CHECKS_DIR) {
 }
 
 /**
- * The paths (relative to root) of files in `dir` that are committed in HEAD.
+ * Files in the checks folder that differ from HEAD in the working tree (edited, deleted, renamed, or a new
+ * helper), sorted. The Stop hook runs only committed checks, so it must not run any of them while one differs.
+ * @param {string} root
+ * @param {string} dir
+ * @returns {string[]}
+ */
+function uncommittedCheckChanges(root, dir) {
+  const r = runGit(root, ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--", dir]);
+  if (!r.ok) return [];
+  /** @type {string[]} */
+  const out = [];
+  const fields = r.stdout.split("\0");
+  for (let i = 0; i < fields.length; i += 1) {
+    const record = fields[i];
+    if (!record || record.length < 4) continue;
+    const xy = record.slice(0, 2);
+    if (xy[0] === "R" || xy[0] === "C") i += 1; // a rename or copy is followed by its source path
+    const rel = normalizeRelPath(record.slice(3));
+    if (rel === null) continue;
+    // A new check that is not committed yet is skipped on its own; a new helper (_*.mjs) could be imported by a
+    // committed check, so it counts like an edit.
+    if (xy === "??" && !path.posix.basename(rel).startsWith("_")) continue;
+    out.push(rel);
+  }
+  return [...new Set(out)].sort();
+}
+
+/**
+ * Paths under the checks folder that exist in HEAD.
  * @param {string} root
  * @param {string} dir
  * @returns {Set<string>}
@@ -729,6 +760,7 @@ export async function runChecks(root, options = {}) {
   const timeoutMs = timeoutOf(options);
   const deadline = typeof options.deadlineMs === "number" ? Date.now() + options.deadlineMs : null;
   const committed = options.committedOnly ? committedFiles(absRoot, listing.dir) : null;
+  const uncommitted = options.committedOnly ? uncommittedCheckChanges(absRoot, listing.dir) : [];
 
   /**
    * @param {CheckFile} f
@@ -746,6 +778,12 @@ export async function runChecks(root, options = {}) {
     durationMs: 0,
     ...fields,
   });
+
+  if (uncommitted.length > 0) {
+    const message = "not run: the checks folder has uncommitted changes";
+    const results = listing.files.map((f) => result(f, { status: "skip", ok: true, message }));
+    return { dir: listing.dir, base, changedFiles, results, errors: listing.errors, uncommitted };
+  }
 
   const results = await pool(
     listing.files,
@@ -778,7 +816,7 @@ export async function runChecks(root, options = {}) {
     deadline,
     (f) => result(f, { status: "skip", ok: true, message: "not run: out of time" }),
   );
-  return { dir: listing.dir, base, changedFiles, results, errors: listing.errors };
+  return { dir: listing.dir, base, changedFiles, results, errors: listing.errors, uncommitted };
 }
 
 /**

@@ -290,6 +290,15 @@ export async function decideStop(root, input) {
       deadlineMs: CHECKS_DEADLINE_MS,
       committedOnly: true,
     });
+    if (report.uncommitted && report.uncommitted.length > 0) {
+      reasons.push({
+        kind: "check",
+        key: "checks-uncommitted",
+        text:
+          `the checks folder has uncommitted changes (${listPaths(report.uncommitted)}), so no check ran: the Stop hook ` +
+          "runs only committed checks. Commit the change in the pull request, where a person reviews it, or restore it",
+      });
+    }
     for (const r of blockingFailures(report.results)) {
       const message = (r.message ?? "failed").replace(/\s+/g, " ").trim();
       reasons.push({ kind: "check", key: `check:${r.id}`, text: `${r.id}: ${message}` });

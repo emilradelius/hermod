@@ -421,6 +421,28 @@ describe("Stop hook: checks", () => {
     expect(blocked(r)).toMatch(/- loud: loud/);
   });
 
+  it("runs no check while a committed check is edited in the working tree, and says so once", () => {
+    const repo = repoWithCheck("no-console-log.mjs", FIXTURE);
+    startSession(repo);
+    // The edit would make the check always pass; the Stop hook must not run the edited copy.
+    repo.write(`${CHECKS_DIR}/no-console-log.mjs`, custom("no-console-log", "error", "return { ok: true };"));
+    repo.write("src/app.ts", 'export const a = 1;\nconsole.log("debug");\n');
+    repo.write("docs/PROGRESS.md", "# Progress\nUpdated.\n");
+    const reason = blocked(stop(repo));
+    expect(reason).toMatch(/the checks folder has uncommitted changes \(\.claude\/hermod\/checks\/no-console-log\.mjs\), so no check ran/);
+    expect(reason).not.toMatch(/console\.log added/);
+    passed(stop(repo));
+  });
+
+  it("treats a new uncommitted helper (_*.mjs) in the checks folder like an edit", () => {
+    const repo = repoWithCheck("no-console-log.mjs", FIXTURE);
+    startSession(repo);
+    repo.write(`${CHECKS_DIR}/_shared.mjs`, "export const relaxed = true;\n");
+    repo.write("src/app.ts", "export const a = 2;\n");
+    repo.write("docs/PROGRESS.md", "# Progress\nUpdated.\n");
+    expect(blocked(stop(repo))).toMatch(/uncommitted changes \(\.claude\/hermod\/checks\/_shared\.mjs\)/);
+  });
+
   it("does not run checks that are not committed", () => {
     const repo = repoWith();
     startSession(repo);
