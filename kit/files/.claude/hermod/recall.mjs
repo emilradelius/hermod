@@ -12,9 +12,9 @@
  * counts double, like a chunk's heading path). Output per hit:
  *
  *   docs/PROGRESS.md:42  (7.31)
- *       …the «cache» «version» is bumped on every…
+ *       …the «max» «retries» setting is raised when…
  *   git 1a2b3c4 2026-11-05  (5.02)
- *       Bump «CACHE_VERSION» after the sw.js change
+ *       Raise «MAX_RETRIES» for slow uploads
  *
  * Exit code: 0 (also when nothing matches), 2 for a usage error, 1 when the search itself failed.
  * Read-only: it never writes a file.
@@ -34,7 +34,7 @@ export const USAGE = `Usage: node .claude/hermod/recall.mjs "query" [--limit N] 
 
 Searches past work: the files in recall.sources in config.json (progress logs, decisions, session history)
 and the git commit messages. Swedish letters match without diacritics (ratta finds rätta), identifiers match
-by their parts (cache version finds CACHE_VERSION, ask claude finds askClaude), and a word of 4 or more
+by their parts (max retries finds MAX_RETRIES, fetch user finds fetchUser), and a word of 4 or more
 letters with no exact match finds words that start with it.
 
   --limit N     show at most N hits (default: recall.limit in config.json, 8)

@@ -83,6 +83,7 @@ export default nextConfig;
   now 4 hours; `qualities` defaults to `[75]`; local IPs are blocked unless `dangerouslyAllowLocalIP`; `images.domains`
   is deprecated (use `remotePatterns`).
 - Smooth scrolling is no longer forced: add `data-scroll-behavior="smooth"` on `<html>` if you relied on it.
-- Codemods: `npx @next/codemod@canary upgrade latest` (several steps), and
-  `npx @next/codemod@canary next-async-request-api .` for `params`, `cookies()` and `headers()`, which the upgrade
+- Codemods: ask the person first, and pin the codemod to the exact Next.js version the repository moves to, never
+  `@canary` or `latest`: `npx @next/codemod@<version> upgrade <version>` (several steps), and
+  `npx @next/codemod@<version> next-async-request-api .` for `params`, `cookies()` and `headers()`, which the upgrade
   codemod does not run in 16.4. Review every codemod diff.

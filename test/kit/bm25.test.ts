@@ -61,12 +61,12 @@ describe("tokenize", () => {
   });
 
   it("keeps snake_case words whole and adds their parts", () => {
-    expect(M.tokenize("CACHE_VERSION")).toEqual(["cache_version", "cache", "version"]);
+    expect(M.tokenize("MAX_RETRIES")).toEqual(["max_retries", "max", "retries"]);
     expect(M.tokenize("__init_db__")).toEqual(["init_db", "init", "db"]);
   });
 
   it("splits camelCase and acronyms, keeping the whole word too", () => {
-    expect(M.tokenize("askClaude")).toEqual(["askclaude", "ask", "claude"]);
+    expect(M.tokenize("fetchUser")).toEqual(["fetchuser", "fetch", "user"]);
     expect(M.tokenize("XMLHttpRequest")).toEqual(["xmlhttprequest", "xml", "http", "request"]);
     expect(M.tokenize("getUserID2fa")).toEqual(["getuserid2fa", "get", "user", "id", "fa"]);
   });
@@ -84,15 +84,15 @@ describe("tokenize", () => {
   });
 
   it("splits on punctuation, keeps digits", () => {
-    expect(M.tokenize("sw.js v2-release 0059_kept-modules")).toEqual([
+    expect(M.tokenize("sw.js v2-release 0042_add-notes")).toEqual([
       "sw",
       "js",
       "v2",
       "release",
-      "0059_kept",
-      "0059",
-      "kept",
-      "modules",
+      "0042_add",
+      "0042",
+      "add",
+      "notes",
     ]);
   });
 
@@ -114,20 +114,20 @@ describe("search", () => {
     expect(top([{ text: "ratta utan prickar" }], "rätta").length).toBe(1);
   });
 
-  it("finds CACHE_VERSION for 'cache version' and for 'CACHE_VERSION'", () => {
-    const docs = [{ text: "Bump CACHE_VERSION in sw.js." }, { text: "Nothing here." }, { text: "A version of the app." }];
-    expect(top(docs, "cache version")[0]!.index).toBe(0);
-    expect(top(docs, "CACHE_VERSION")[0]!.index).toBe(0);
+  it("finds MAX_RETRIES for 'max retries' and for 'MAX_RETRIES'", () => {
+    const docs = [{ text: "Raise MAX_RETRIES in upload.js." }, { text: "Nothing here." }, { text: "The retries of the app." }];
+    expect(top(docs, "max retries")[0]!.index).toBe(0);
+    expect(top(docs, "MAX_RETRIES")[0]!.index).toBe(0);
     // The whole identifier and both parts are query terms: the exact identifier ranks first.
-    expect(top(docs, "cache_version").map((h) => h.index)).toEqual([0, 2]);
-    expect(top(docs, "cache_version")[0]!.matched).toEqual(["cache", "cache_version", "version"]);
+    expect(top(docs, "max_retries").map((h) => h.index)).toEqual([0, 2]);
+    expect(top(docs, "max_retries")[0]!.matched).toEqual(["max", "max_retries", "retries"]);
   });
 
-  it("finds camelCase askClaude for 'ask claude'", () => {
-    const docs = [{ text: "All calls go through askClaude in lib." }, { text: "Ask the team." }];
-    const hits = top(docs, "ask claude");
+  it("finds camelCase fetchUser for 'fetch user'", () => {
+    const docs = [{ text: "All calls go through fetchUser in lib." }, { text: "Fetch the team." }];
+    const hits = top(docs, "fetch user");
     expect(hits[0]!.index).toBe(0);
-    expect(hits[0]!.matched).toEqual(["ask", "claude"]);
+    expect(hits[0]!.matched).toEqual(["fetch", "user"]);
   });
 
   it("ranks a heading (title) match above a passing mention", () => {
@@ -216,12 +216,12 @@ describe("search", () => {
 
 describe("snippet", () => {
   it("marks matched words with «»", () => {
-    const s = M.snippet("We bump CACHE_VERSION after each sw.js change.", ["cache", "version"]);
-    expect(s.text).toBe("We bump «CACHE_VERSION» after each sw.js change.");
+    const s = M.snippet("We raise MAX_RETRIES after each upload.js change.", ["max", "retries"]);
+    expect(s.text).toBe("We raise «MAX_RETRIES» after each upload.js change.");
   });
 
   it("marks words with diacritics and camelCase words whole", () => {
-    expect(M.snippet("Vi ska rätta askClaude nu.", ["ratta", "claude"]).text).toBe("Vi ska «rätta» «askClaude» nu.");
+    expect(M.snippet("Vi ska rätta fetchUser nu.", ["ratta", "user"]).text).toBe("Vi ska «rätta» «fetchUser» nu.");
     // Decomposed letters stay inside the mark.
     expect(M.snippet("rätta", ["ratta"]).text).toBe("«rätta»");
   });

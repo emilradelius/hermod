@@ -42,7 +42,7 @@ interface SkillRow {
 }
 interface Report {
   date: string;
-  usage: { files: number; invalidFiles: string[]; ledgerEvents: number; ledgerSkipped: number; unknownSkills: string[] };
+  usage: { tracked: boolean; files: number; invalidFiles: string[]; ledgerEvents: number; ledgerSkipped: number; unknownSkills: string[] };
   skills: SkillRow[];
   overlaps: Array<{ a: string; b: string; similarity: number }>;
   tooLong: Array<{ name: string; lines: number; chars: number; overLines: boolean; overChars: boolean }>;
@@ -199,6 +199,24 @@ describe("pinned and kit skills", () => {
     expect(row(rep, "photo-resize").status).toBe("archive-candidate");
     expect(rep.actions.some((a) => a.target === "deploy-steps")).toBe(false);
     expect(rep.actions.some((a) => a.kind === "archive" && a.target === "photo-resize")).toBe(true);
+  });
+
+  it("with the ledger off, skill use is not recorded: no skill is stale or an archive candidate, and the report says so", () => {
+    const off = repoWith([{ day: "2026-01-01", files: { ...DEPLOY, ...PHOTOS } }], config({}, { ledger: { enabled: false } }));
+    const rep = report(off, "2026-11-05");
+    expect(rep.usage.tracked).toBe(false);
+    for (const name of ["deploy-steps", "photo-resize"]) {
+      expect(row(rep, name).idleDays).toBeGreaterThan(300);
+      expect(row(rep, name).status).toBe("active");
+    }
+    expect(rep.actions.some((a) => a.kind === "archive" || a.kind === "review-stale")).toBe(false);
+    expect(curator.formatReport(rep)).toContain("Skill use is not recorded while the ledger is off");
+    // The same repository with the ledger on (the default) does call them out.
+    const on = repoWith([{ day: "2026-01-01", files: { ...DEPLOY, ...PHOTOS } }]);
+    const onRep = report(on, "2026-11-05");
+    expect(onRep.usage.tracked).toBe(true);
+    expect(row(onRep, "deploy-steps").status).toBe("archive-candidate");
+    expect(curator.formatReport(onRep)).not.toContain("not recorded");
   });
 
   it("skills the kit owns (listed in VERSION.json) are exempt; the repo's own are not", () => {

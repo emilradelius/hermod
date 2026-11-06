@@ -4,7 +4,7 @@
  *
  * - tokenize(): NFKD + combining marks removed (å→a, ä→a, ö→o; ß→ss, æ→ae, ø→o and a few more), lowercase,
  *   split on anything that is not a letter, digit or "_". A word with "_" or camelCase is kept whole and also
- *   as its parts: `CACHE_VERSION` → cache_version, cache, version; `askClaude` → askclaude, ask, claude.
+ *   as its parts: `MAX_RETRIES` → max_retries, max, retries; `fetchUser` → fetchuser, fetch, user.
  *   Tokens shorter than 2 characters and a small English + Swedish stopword list are dropped.
  * - buildIndex()/search(): Okapi BM25 (k1 1.2, b 0.75). A document's title (the heading path of a markdown
  *   chunk, the subject of a commit) counts double. A query term with no exact match falls back to every

@@ -10,7 +10,8 @@ file name and the export name change.
 | Runtime | Node.js only; setting `runtime` throws | Edge (keep it only if you need Edge) |
 | Both files present | build and dev server fail | |
 
-Migrate with the codemod `npx @next/codemod@canary middleware-to-proxy .` (review its diff), and rename config flags
+Migrate with the codemod, pinned to the repository's exact Next.js version and never `@canary` or `latest`
+(`npx @next/codemod@<version> middleware-to-proxy .`, after asking the person; review its diff), and rename config flags
 (`skipMiddlewareUrlNormalize` is now `skipProxyUrlNormalize`). Do not rename Edge middleware blindly: check it does
 not depend on Edge-only behaviour first.
 

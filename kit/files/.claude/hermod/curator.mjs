@@ -9,7 +9,8 @@
  * pinned (config curator.pinned), and a status:
  *   active; stale (no use for curator.staleDays, measured from the later of the last use and the day the skill
  *   was added); archive-candidate (curator.archiveDays). Pinned skills and skills owned by the kit (listed in
- *   `.claude/hermod/VERSION.json`) are exempt.
+ *   `.claude/hermod/VERSION.json`) are exempt. While the ledger is off (config ledger.enabled), skill use is not
+ *   recorded at all, so no skill is called stale or an archive candidate on age alone; the report says so.
  * Also: pairs of skills whose token sets overlap (Jaccard ≥ curator.overlapThreshold), skills that are too long
  * (lines > maxSkillLines or chars > maxSkillChars), and lessons: cap use, near-duplicates (Jaccard ≥ 0.6) and
  * lessons that restate a skill (≥ 80 % of the lesson's tokens are in one skill).
@@ -95,7 +96,7 @@ const EXCERPT_CHARS = 80;
  * @property {string} date the report date (YYYY-MM-DD)
  * @property {{ staleDays: number, archiveDays: number, overlapThreshold: number, maxSkillLines: number, maxSkillChars: number, lessonDuplicateThreshold: number, restateShare: number, pinned: string[] }} settings
  * @property {string[]} configErrors
- * @property {{ files: number, invalidFiles: string[], ledgerEvents: number, ledgerSkipped: number, unknownSkills: string[] }} usage
+ * @property {{ tracked: boolean, files: number, invalidFiles: string[], ledgerEvents: number, ledgerSkipped: number, unknownSkills: string[] }} usage
  * @property {SkillRow[]} skills
  * @property {Array<{ a: string, b: string, similarity: number }>} overlaps
  * @property {Array<{ name: string, lines: number, chars: number, overLines: boolean, overChars: boolean }>} tooLong
@@ -231,6 +232,8 @@ export function buildReport(root, options = {}) {
   const pinned = new Set(cur.pinned);
   const kitSkills = kitSkillNames(root, config.skills.dir);
   const usage = collectUsage(root);
+  // With the ledger off nothing records skill use, so days without a recorded use say nothing about a skill.
+  const tracked = config.ledger.enabled !== false;
 
   /** @type {SkillRow[]} */
   const skills = [];
@@ -293,8 +296,8 @@ export function buildReport(root, options = {}) {
 
     if (row.pinned) row.status = "pinned";
     else if (row.kit) row.status = "kit";
-    else if (row.idleDays !== null && row.idleDays >= cur.archiveDays) row.status = "archive-candidate";
-    else if (row.idleDays !== null && row.idleDays >= cur.staleDays) row.status = "stale";
+    else if (tracked && row.idleDays !== null && row.idleDays >= cur.archiveDays) row.status = "archive-candidate";
+    else if (tracked && row.idleDays !== null && row.idleDays >= cur.staleDays) row.status = "stale";
     skills.push(row);
   }
   const known = new Set(skills.map((s) => s.name));
@@ -435,6 +438,7 @@ export function buildReport(root, options = {}) {
     },
     configErrors: loaded.errors.map((e) => redact(e)),
     usage: {
+      tracked,
       files: usage.files,
       invalidFiles: usage.invalidFiles,
       ledgerEvents: usage.ledgerEvents,
@@ -466,6 +470,9 @@ export function formatReport(r) {
   let usageLine = `- Usage: ${r.usage.files} usage files, ${r.usage.ledgerEvents} skill events from the local ledger`;
   if (r.usage.ledgerSkipped > 0) usageLine += ` (${r.usage.ledgerSkipped} more already in usage files)`;
   usageLine += ".";
+  if (!r.usage.tracked) {
+    usageLine += " Skill use is not recorded while the ledger is off (ledger.enabled in config.json), so no skill is called stale or an archive candidate on age alone.";
+  }
   if (r.usage.invalidFiles.length > 0) usageLine += ` Skipped ${r.usage.invalidFiles.length} unreadable usage files: ${r.usage.invalidFiles.slice(0, 5).map(cell).join(", ")}${r.usage.invalidFiles.length > 5 ? ", …" : ""}.`;
   if (r.usage.unknownSkills.length > 0) usageLine += ` Usage of ${r.usage.unknownSkills.length} skills that no longer exist was ignored.`;
   out.push(usageLine);

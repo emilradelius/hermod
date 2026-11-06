@@ -13,7 +13,8 @@ The curator script only reports. You propose; a person merges. Nothing is delete
 
 1. Run `node .claude/hermod/curator.mjs --out .claude/hermod/.local/curator-report.md` and read the report.
 2. Decide one action per finding, or none:
-   - **Stale or archive candidate** (unused for 14 or 30 days, not pinned): move the skill folder to
+   - **Stale or archive candidate** (unused for 14 or 30 days, not pinned; never reported while the ledger is off,
+     because then no use is recorded): move the skill folder to
      `.claude/hermod/archive/skills/<name>/` and add a line to `.claude/hermod/archive/LEDGER.md` with the date, what
      moved, why, and the report's numbers as evidence.
    - **Overlapping skills**: merge the smaller into the larger, keep the clearer name, carry over unique steps, and

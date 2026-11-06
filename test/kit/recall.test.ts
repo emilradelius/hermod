@@ -72,7 +72,7 @@ const PROGRESS = [
   "",
   "## Status",
   "",
-  "The booking form works. We still have to rätta the price rounding.",
+  "The signup form works. We still have to rätta the price rounding.",
   "",
   "## Next step",
   "",
@@ -83,8 +83,8 @@ const PROGRESS = [
 const DECISIONS = [
   "# Decisions",
   "",
-  "- Bump CACHE_VERSION in public/sw.js whenever the service worker changes (2026-10-01).",
-  "- Every model call goes through askClaude in src/lib/claude.ts.",
+  "- Raise MAX_RETRIES in src/upload.js whenever uploads time out (2026-10-01).",
+  "- Every request goes through fetchUser in src/lib/api.ts.",
   "",
 ].join("\n");
 
@@ -107,27 +107,27 @@ describe("recall finds words and identifiers", () => {
     expect(r.stdout).toContain("«rätta»");
   });
 
-  it.each(["cache version", "CACHE_VERSION", "cache_version", "Cache Version"])("finds CACHE_VERSION for %s", (q) => {
+  it.each(["max retries", "MAX_RETRIES", "max_retries", "Max Retries"])("finds MAX_RETRIES for %s", (q) => {
     const r = recall(repo, q);
     expect(r.code).toBe(0);
     expect(heads(r.stdout)[0]).toBe("docs/decisions.md:3");
-    expect(r.stdout).toContain("«CACHE_VERSION»");
+    expect(r.stdout).toContain("«MAX_RETRIES»");
   });
 
-  it("finds camelCase askClaude for 'ask claude'", () => {
-    const r = recall(repo, "ask", "claude");
+  it("finds camelCase fetchUser for 'fetch user'", () => {
+    const r = recall(repo, "fetch", "user");
     expect(r.code).toBe(0);
     expect(heads(r.stdout)[0]).toBe("docs/decisions.md:4");
-    expect(r.stdout).toContain("«askClaude»");
+    expect(r.stdout).toContain("«fetchUser»");
   });
 
   it("falls back to prefix matches (4+ characters) when a word has no exact match", () => {
-    const j = recallJson(repo, "boo");
+    const j = recallJson(repo, "sig");
     expect(j.results).toEqual([]);
-    const k = recallJson(repo, "book");
-    expect(k.terms).toEqual([{ term: "book", match: "prefix", terms: ["booking"] }]);
+    const k = recallJson(repo, "sign");
+    expect(k.terms).toEqual([{ term: "sign", match: "prefix", terms: ["signup"] }]);
     expect(k.results[0]!.path).toBe("docs/PROGRESS.md");
-    expect(k.results[0]!.snippet).toContain("«booking»");
+    expect(k.results[0]!.snippet).toContain("«signup»");
   });
 
   it("says plainly when nothing matches, and exits 0", () => {
@@ -441,7 +441,7 @@ describe("line numbers", () => {
 
 describe("performance", () => {
   it("answers over a 1 MB corpus in under 1.5 s", () => {
-    const words = ["booking", "invoice", "deploy", "rätta", "kunden", "lager", "migration", "service", "worker", "routing", "askClaude", "CACHE_VERSION", "schema", "offline", "export", "räkning", "fordon", "kalender", "summary", "release"];
+    const words = ["garden", "invoice", "deploy", "rätta", "boken", "huset", "migration", "service", "worker", "routing", "fetchUser", "MAX_RETRIES", "schema", "offline", "export", "räkning", "sjön", "vädret", "summary", "release"];
     const files: Files = {};
     let total = 0;
     let seed = 7;
@@ -466,7 +466,7 @@ describe("performance", () => {
     let best = Infinity;
     let out = "";
     for (let i = 0; i < 2; i++) {
-      const r = recall(repo, "rätta kunden cache version");
+      const r = recall(repo, "rätta boken max retries");
       expect(r.code).toBe(0);
       out = r.stdout;
       best = Math.min(best, r.durationMs);

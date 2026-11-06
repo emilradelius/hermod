@@ -44,9 +44,11 @@ call no git. Over `ledger.maxFileBytes`, `ledger.jsonl` becomes `ledger.1.jsonl`
 files: session-start head to working tree (committed, staged, unstaged, untracked), minus files dirty at start
 and unchanged (or not hashed). No state: since the merge base with the default branch, else uncommitted only.
 Reasons: `missing` (code changed, a `ritual.require` path did not), `knowledge` (validator errors in a lessons
-or skill file changed this session, even without code), `check` (an error-level committed check failed; only when code changed;
-checks not started after 12 s are skipped). It blocks at most once per fingerprint (sha256 of the sorted reason
-keys; a new set of reasons may block again) and at most `ritual.maxBlocksPerSession` times (2).
+or skill file changed this session, even without code), `check` (an error-level committed check failed; checks run
+whenever any file changed and each check's `when` decides; checks not started after 12 s are skipped), and
+`checks-uncommitted` (a file in the checks folder differs from HEAD, so no check ran at all). It blocks at most
+once per reason (each reason key is kept in `stop.json`, a check's key is `check:<id>`; a later Stop blocks only
+for a new reason) and at most `ritual.maxBlocksPerSession` times (2).
 `stop.json` is written before the block is printed; if that fails, no block. The reason is ≤ 1,500 characters
 and lists ≤ 5 changed paths.
 
@@ -152,7 +154,8 @@ Each only proposes or reports.
 - **recall.mjs** reads `recall.sources` (800-character chunks) and commit messages. BM25 (k1 1.2, b 0.75),
   headings count double, diacritics fold, identifiers split, 4+ letter words fall back to prefixes. Writes nothing.
 - **curator.mjs** reads skills, git dates, `usage/*.json`, the local ledger, lessons and `VERSION.json`. Pinned
-  and kit-owned skills are exempt. Lessons: near-duplicates at Jaccard 0.6, restating a skill at 80 %. Output to
+  and kit-owned skills are exempt. With the ledger off no use is recorded, so no skill is called stale or an archive
+  candidate, and the report says so. Lessons: near-duplicates at Jaccard 0.6, restating a skill at 80 %. Output to
   stdout or `--out` (inside `.local/`, or absolute outside the repository). **/curate** (person-started:
   `disable-model-invocation: true`) proposes a pull request; it archives, never deletes.
 
