@@ -483,6 +483,11 @@ export function skillVersionMeta(meta: SkillVersionMeta): SkillVersionMeta {
   };
 }
 
+/** The version a skills.update was computed from (compare-and-set). */
+export function expectedSkillVersion(version: unknown): number {
+  return requireInteger(version, "Skill expectedVersion", 1);
+}
+
 /** A new skill is version 1 and active; its first version row is written with it. */
 export function buildSkill(input: NewSkill, id: Id, at: IsoTime): { skill: SkillRecord; version: SkillVersionRecord } {
   const { description, body } = skillChange(input);
@@ -639,6 +644,11 @@ export function jobOutcome(outcome: JobOutcome): JobOutcome {
     nextRunAt: optionalIso(outcome?.nextRunAt, "Job nextRunAt"),
     failures: requireInteger(outcome?.failures, "Job failures"),
   };
+}
+
+/** The lease owner a jobs.finish names (the worker that claimed the job). */
+export function finishWorker(worker: unknown): string {
+  return requireName(worker, "Job finish worker");
 }
 
 export interface ClaimArgs {

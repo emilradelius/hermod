@@ -41,6 +41,8 @@ import {
   DEFAULT_SEARCH_LIMIT,
   DELIVERY_STATUSES,
   DRAFT_SCORES,
+  expectedSkillVersion,
+  finishWorker,
   foldedWords,
   jobFields,
   jobOutcome,
@@ -73,9 +75,9 @@ import {
   StorageError,
   takeLimit,
   transitionArgs,
-  wordCounts,
   type Clock,
   type StorageOptions,
+  wordCounts,
 } from "./common.js";
 
 export type MemoryStorageOptions = StorageOptions;
@@ -314,10 +316,12 @@ function skillsRepo(state: State, clock: Clock): Storage["skills"] {
       );
       return skills.sort((a, b) => compareText(a.name, b.name)).map(copy);
     },
-    async update(id, changeInput, metaInput) {
+    async update(id, changeInput, metaInput, expectedVersion) {
       const content = skillChange(changeInput);
       const meta = skillVersionMeta(metaInput);
+      const expected = expectedSkillVersion(expectedVersion);
       const at = clock.nowIso();
+      if (state.skills.get(id)?.version !== expected) return null;
       const updated = change(state.skills, id, (skill) => ({
         ...skill,
         ...content,
@@ -487,8 +491,11 @@ function jobsRepo(state: State, clock: Clock): Storage["jobs"] {
         return leased ? [leased] : [];
       });
     },
-    async finish(id, outcome) {
+    async finish(id, outcome, worker) {
       const result = jobOutcome(outcome);
+      const owner = finishWorker(worker);
+      // Only the worker that holds the lease may save the outcome and release it.
+      if (state.jobs.get(id)?.lockedBy !== owner) return null;
       return change(state.jobs, id, (job) => ({ ...job, ...result, lockedUntil: null, lockedBy: null }));
     },
     async setEnabled(id, enabled) {

@@ -1,5 +1,5 @@
 /** Small helpers shared by the channels and the scheduler. */
-import type { DeliveryMessage, Redactor } from "../types.js";
+import type { DeliveryMessage } from "../types.js";
 
 /** A readable one-line description of anything thrown. Never throws. */
 export function describeError(err: unknown): string {
@@ -92,24 +92,3 @@ export function isDeliveryMessage(value: unknown): value is DeliveryMessage {
   const optionalString = (v: unknown): boolean => v === undefined || v === null || typeof v === "string";
   return typeof m.title === "string" && typeof m.body === "string" && optionalString(m.url) && optionalString(m.tag);
 }
-
-/**
- * Minimal secret redaction for error text that is stored (job.lastError, delivery.error).
- * NOTE: a stand-in until src/safety/redact.ts (secretsRedactor) exists; replace it with that one.
- */
-const SECRET_PATTERNS: Array<[RegExp, string]> = [
-  [/\bsk-ant-[A-Za-z0-9_-]{8,}/g, "[REDACTED]"],
-  [/\bsk-[A-Za-z0-9_-]{20,}/g, "[REDACTED]"],
-  [/\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}/g, "[REDACTED]"],
-  [/\bgithub_pat_[A-Za-z0-9_]{20,}/g, "[REDACTED]"],
-  [/\bxox[abprs]-[A-Za-z0-9-]{10,}/g, "[REDACTED]"],
-  [/\bAKIA[0-9A-Z]{16}\b/g, "[REDACTED]"],
-  [/\b[0-9]{5,15}:[A-Za-z0-9_-]{30,}/g, "[REDACTED]"],
-  [/\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/g, "[REDACTED]"],
-  [/\b(Bearer)\s+[A-Za-z0-9._~+/=-]{8,}/gi, "$1 [REDACTED]"],
-  [/(\/\/[^/\s:@]+):[^/\s@]+@/g, "$1:[REDACTED]@"],
-  [/\b([A-Za-z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD))=[^\s&"']+/gi, "$1=[REDACTED]"],
-];
-
-export const defaultRedactor: Redactor = (text) =>
-  SECRET_PATTERNS.reduce((out, [pattern, replacement]) => out.replace(pattern, replacement), text);

@@ -187,8 +187,9 @@ summary), and the review has not called `session_search`.
 **Triggers.** `shouldReview(counters)`: 10 user turns since the last memory review, or 10 tool rounds since the last
 skill review. Call `markReviewed` after the run ends.
 
-**Curator.** `curate(storage, { agentId, now })`: unused 14 days → stale, 30 → archived; pinned exempt. Only the
-status flag changes, audited; nothing is deleted.
+**Curator.** `curate(storage, { agentId, now })` only reports: unused 14 days → stale, 30 → archived, pinned
+exempt; it never writes. `applyCuration(storage, report, by)` applies a report for a person (non-human actors are
+refused), skips skills that moved since the report, audits each change, and deletes nothing.
 
 ## 7. Scheduler and channels
 
@@ -204,7 +205,8 @@ await scheduleJob(storage, { agentId: "notes", name: "daily", schedule: "0 8 * *
 const stop = startTimer(scheduler); // tick() every 60 s, never overlapping
 ```
 
-`tick()` leases due jobs (5 minutes; keep the run's wall clock below it), at most 25 per tick. Agent off →
+`tick()` leases due jobs (5 minutes; keep the run's wall clock below it), at most 25 per tick; `jobs.finish` writes
+only for the worker that still holds the lease, and the next run and the retry backoff count from the run's end. Agent off →
 skipped. A pre-step is a registered function, never code from the row; null skips the run. `makeJobRunner`: a fresh
 session (kind `job`, unattended), the job's skills attached, no `scheduling`, `delegation` or `messaging` tools, and
 `unattendedPolicy`: **deny by default** for what needs a person now; shadow and supervised side effects still become

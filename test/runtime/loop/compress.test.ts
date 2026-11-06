@@ -73,7 +73,41 @@ describe("compression in the loop", () => {
     expect(JSON.stringify(rebuilt[0])).toContain(REFERENCE_ONLY);
   });
 
-  it("keeps a budgeted tail with thinking stripped and no orphaned tool_result", async () => {
+  it("at a real turn boundary keeps a budgeted tail with thinking stripped and no orphaned tool_result", async () => {
+    const storage = await setup();
+    const tools = makeTools();
+    const t1 = thinkingToolTurn("t1");
+    // Run 1 finishes a tool loop; run 2 overflows on its first call, so it compresses at a turn boundary.
+    const model = new FakeModelClient([
+      t1,
+      textMessage("Read it."),
+      { throw: apiError(413, "request too large") },
+      textMessage(SUMMARY, { model: "claude-haiku-5-5" }),
+      textMessage("done"),
+    ]);
+    const first = await runAgent(baseConfig([tools.set]), { userMessage: "read" }, { storage, model, sleep: noSleep });
+    await runAgent(
+      baseConfig([tools.set], { context: { tailTokens: 200 } }),
+      { userMessage: "and now?", sessionId: first.sessionId },
+      { storage, model, sleep: noSleep },
+    );
+    const after = model.calls[4]?.messages ?? [];
+    expect(after.map((m) => m.role)).toEqual(["user", "assistant", "user", "assistant", "user"]);
+    expect(JSON.stringify(after[0])).toContain(REFERENCE_ONLY);
+    expect(JSON.stringify(after[0])).toContain("the most recent turns follow");
+    // The tail's assistant turn: text and tool_use kept, thinking (and its signature) gone.
+    expect(after[1]).toEqual({ role: "assistant", content: [t1.content[1], t1.content[2]] });
+    expect(JSON.stringify(after)).not.toContain("sig-t1");
+    // Its tool_result is there, right after its tool_use; the original first user turn is not.
+    expect(JSON.stringify(after[2])).toContain('"tool_use_id":"t1"');
+    expect(JSON.stringify(after)).not.toContain('"text":"read"');
+    // The request ends with the new user turn.
+    expect(JSON.stringify(after[4])).toContain("and now?");
+    // The request before compression still had the turn exactly as received (nothing edited in place).
+    expect(model.calls[1]?.messages[1]?.content).toEqual(t1.content);
+  });
+
+  it("in the middle of a tool loop restarts from the summary alone (no tail, so no turn with stripped thinking)", async () => {
     const storage = await setup();
     const tools = makeTools();
     const t1 = thinkingToolTurn("t1");
@@ -84,17 +118,12 @@ describe("compression in the loop", () => {
       { storage, model, sleep: noSleep },
     );
     const after = model.calls[2]?.messages ?? [];
-    expect(after.map((m) => m.role)).toEqual(["user", "assistant", "user"]);
+    expect(after.map((m) => m.role)).toEqual(["user"]);
     expect(JSON.stringify(after[0])).toContain(REFERENCE_ONLY);
-    expect(JSON.stringify(after[0])).toContain("the most recent turns follow");
-    // The tail's assistant turn: text and tool_use kept, thinking (and its signature) gone.
-    expect(after[1]).toEqual({ role: "assistant", content: [t1.content[1], t1.content[2]] });
+    expect(JSON.stringify(after[0])).not.toContain("the most recent turns follow");
+    // The tool result the model had not answered yet went to the summariser as text.
+    expect(JSON.stringify(model.calls[1]?.messages)).toContain("[tool result]");
     expect(JSON.stringify(after)).not.toContain("sig-t1");
-    // Its tool_result is there, right after its tool_use; the original first user turn is not.
-    expect(JSON.stringify(after[2])).toContain('"tool_use_id":"t1"');
-    expect(JSON.stringify(after)).not.toContain('"text":"read"');
-    // The request before compression still had the turn exactly as received (nothing edited in place).
-    expect(model.calls[0]?.messages).toHaveLength(1);
   });
 
   it("413 (request too large) → compress, then retry once", async () => {
@@ -111,10 +140,9 @@ describe("compression in the loop", () => {
     expect(model.calls.map((c) => c.purpose)).toEqual(["main", "main", "summary", "main"]);
     const retried = model.calls[3]?.messages ?? [];
     expect(JSON.stringify(retried[0])).toContain(REFERENCE_ONLY);
-    // The tail kept the last tool round, without thinking.
-    expect(retried.map((m) => m.role)).toEqual(["user", "assistant", "user"]);
-    expect(JSON.stringify(retried[1])).not.toContain("thinking");
-    expect(JSON.stringify(retried[1])).toContain('"tool_use"');
+    // The overflow came in the middle of a tool loop: the retry restarts from the summary alone.
+    expect(retried.map((m) => m.role)).toEqual(["user"]);
+    expect(JSON.stringify(retried)).not.toContain("thinking");
   });
 
   it("a second overflow after compressing ends with 'error'", async () => {
@@ -196,9 +224,16 @@ describe("selectTail and stripForTail", () => {
     { role: "user", content: [{ type: "tool_result", tool_use_id: "b", content: "short" }] },
   ];
 
+  // The same conversation at a real turn boundary: the tool loop is over and a new user turn starts.
+  const atBoundary: MessageParam[] = [
+    ...conversation,
+    { role: "assistant", content: [{ type: "thinking", thinking: "", signature: "s2" }, { type: "text", text: "done" }] },
+    { role: "user", content: "go on" },
+  ];
+
   it("never starts with a tool_result whose tool_use was cut off, and strips thinking", () => {
-    for (let budget = 0; budget < 400; budget += 5) {
-      const tail = selectTail(conversation, budget);
+    for (let budget = 0; budget < 600; budget += 5) {
+      const tail = selectTail(atBoundary, budget);
       if (tail.length === 0) continue;
       const first = tail[0];
       if (first?.role === "user") expect(JSON.stringify(first)).not.toContain("tool_result");
@@ -214,8 +249,14 @@ describe("selectTail and stripForTail", () => {
         }
       }
     }
-    expect(selectTail(conversation, 60).map((m) => m.role)).toEqual(["assistant", "user"]);
-    expect(selectTail(conversation, 0)).toEqual([]);
+    expect(selectTail(atBoundary, 60).map((m) => m.role)).toEqual(["assistant", "user"]);
+    expect(selectTail(atBoundary, 0)).toEqual([]);
+  });
+
+  it("keeps no tail in the middle of a tool loop (the last message holds tool results) or after a paused turn", () => {
+    expect(selectTail(conversation, 10_000)).toEqual([]);
+    expect(selectTail([...atBoundary, { role: "assistant", content: [{ type: "text", text: "paused" }] }], 10_000)).toEqual([]);
+    expect(selectTail(atBoundary, 10_000).at(-1)).toEqual({ role: "user", content: "go on" });
   });
 
   it("does not change the original messages", () => {

@@ -162,6 +162,21 @@ export function applySkillChanges(
   return { description, body };
 }
 
+/**
+ * Thrown by SkillService.patchSkill when the skill kept changing while the change was being written (its version
+ * moved twice). Nothing was written. A proposal whose apply failed this way is marked rejected with this reason, so
+ * the change has to be proposed again (on the latest version).
+ */
+export class SkillConflictError extends Error {
+  readonly code = "conflict" as const;
+  readonly skill: string;
+  constructor(name: string) {
+    super(`Skill "${name}" changed twice while this change was being written; nothing was saved. Propose the change again.`);
+    this.name = "SkillConflictError";
+    this.skill = name;
+  }
+}
+
 export interface SkillServiceOptions {
   storage: Storage;
   now?: () => Date;
@@ -251,14 +266,25 @@ export class SkillService {
     meta: SkillMeta,
   ): Promise<SkillRecord> {
     const changes: readonly SkillChange[] = Array.isArray(change) ? change : [change as SkillChange];
-    const skill = await this.#storage.skills.get(ref.agentId, ref.name);
+    const versionMeta = { createdBy: meta.actor, proposalId: meta.proposalId ?? null };
+    let skill: SkillRecord | null = null;
+    let updated: SkillRecord | null = null;
+    // Compare-and-set on the version: a change computed from a version that moved meanwhile (another approval
+    // landed first) is not written. It is computed again once on a fresh read, so both changes are kept, or it
+    // fails (patch_not_found when the other change removed the text it patches). Never loses a change silently.
+    for (let attempt = 0; attempt < 2 && updated === null; attempt++) {
+      skill = await this.#storage.skills.get(ref.agentId, ref.name);
+      if (!skill) throw new SkillError("not_found", `There is no skill named "${ref.name}".`);
+      const next = applySkillChanges(skill, changes);
+      updated = await this.#storage.skills.update(skill.id, next, versionMeta, skill.version);
+    }
     if (!skill) throw new SkillError("not_found", `There is no skill named "${ref.name}".`);
-    const next = applySkillChanges(skill, changes);
-    const updated = await this.#storage.skills.update(skill.id, next, {
-      createdBy: meta.actor,
-      proposalId: meta.proposalId ?? null,
-    });
-    if (!updated) throw new SkillError("not_found", `There is no skill named "${ref.name}".`);
+    if (!updated) {
+      if (!(await this.#storage.skills.get(ref.agentId, ref.name))) {
+        throw new SkillError("not_found", `There is no skill named "${ref.name}".`);
+      }
+      throw new SkillConflictError(ref.name);
+    }
     const at = this.#now().toISOString();
     await this.#storage.skills.bump(skill.id, "patches", at);
     await this.#audit(meta.actor, "skill.patch", ref.agentId, ref.name, {

@@ -15,7 +15,10 @@
  *   category (cyber, general_harms, none) still shows tokens in usage and is counted. Over-counting is the safe side
  *   for a budget cap.
  * - Batch is 50% off and US-only inference 1.1x, on every category; fast mode multiplies by the model's factor.
- * - An unknown model throws: a cost ledger must never silently record 0.
+ * - An unknown model throws: a cost ledger must never silently record 0. For a call that was already made (and
+ *   paid), conservativeCostOf prices a model PRICING does not list (for example a refusal-fallback entry in
+ *   `usage.iterations` naming an unpriced model) at the highest rates of any priced model and names it, so the money
+ *   still counts against the caps.
  */
 import type { Usage } from "../types.js";
 import { show } from "./internal.js";
@@ -61,6 +64,25 @@ const US_ONLY_FACTOR = 1.1;
 /** The cost in USD of one model call's usage. `model` is the model the request named. */
 export function costOf(model: string, usage: CostUsage, options: CostOptions = {}): number {
   return costPico(model, usage, options) / PICO_PER_USD;
+}
+
+/** A call's cost where unpriced models were charged at the highest rates of any priced model. */
+export interface ConservativeCost {
+  usd: number;
+  /** The models PRICING does not list that were charged at the highest rates (empty when all were priced). */
+  unknownModels: string[];
+}
+
+/**
+ * The cost of a call that was already made, never less than its real cost: like costOf, except that a model PRICING
+ * does not list (the requested one or one named in `usage.iterations`) is charged at the highest rate of any priced
+ * model in every category (and the highest fast-mode factor), and is named in `unknownModels`. Still throws for
+ * usage that is not a usage object or has token counts that are not whole numbers of 0 or more.
+ */
+export function conservativeCostOf(model: string, usage: CostUsage, options: CostOptions = {}): ConservativeCost {
+  const unknown = new Set<string>();
+  const pico = costPico(model, usage, options, unknown);
+  return { usd: pico / PICO_PER_USD, unknownModels: [...unknown] };
 }
 
 /**
@@ -163,6 +185,26 @@ export class CostTracker {
     return { usd: pico / PICO_PER_USD, totalUsd: this.totalUsd };
   }
 
+  /**
+   * Records one call priced with conservativeCostOf (an unpriced model at the highest rates). Always records.
+   */
+  addConservative(model: string, usage: CostUsage, options?: CostOptions): ConservativeCost & { totalUsd: number } {
+    const unknown = new Set<string>();
+    const pico = costPico(model, usage, { ...this.#defaults, ...options }, unknown);
+    this.#spentPico += pico;
+    return { usd: pico / PICO_PER_USD, unknownModels: [...unknown], totalUsd: this.totalUsd };
+  }
+
+  /** Records an amount in USD for a call whose usage could not be priced (for example its reserved worst case). */
+  addUsd(usd: number): { usd: number; totalUsd: number } {
+    if (typeof usd !== "number" || !Number.isFinite(usd) || usd < 0) {
+      throw new RangeError(`CostTracker: the amount must be a finite number of US dollars, 0 or more (got ${show(usd)}).`);
+    }
+    const pico = usdToPico(usd);
+    this.#spentPico += pico;
+    return { usd: pico / PICO_PER_USD, totalUsd: this.totalUsd };
+  }
+
   get totalUsd(): number {
     return this.#spentPico / PICO_PER_USD;
   }
@@ -181,7 +223,11 @@ export class CostTracker {
   }
 }
 
-function costPico(model: string, usage: CostUsage, options: CostOptions): number {
+/**
+ * Pico-dollars for one call's usage. With `unknown`, a model PRICING does not list is priced at HIGHEST_PRICING and
+ * added to the set instead of throwing.
+ */
+function costPico(model: string, usage: CostUsage, options: CostOptions, unknown?: Set<string>): number {
   requireObject(usage, "usage");
   const factor = commonFactor(options, options.batch ?? (usage.service_tier === "batch"));
   const fast = usage.speed === "fast";
@@ -189,10 +235,26 @@ function costPico(model: string, usage: CostUsage, options: CostOptions): number
   if (Array.isArray(iterations) && iterations.length > 0) {
     return iterations.reduce((sum, entry, index) => {
       const where = `usage.iterations[${index}]`;
-      return sum + pricePart(iterationModel(entry, model, where), entry, where, factor, fast);
+      return sum + pricePart(iterationModel(entry, model, where), entry, where, factor, fast, unknown);
     }, 0);
   }
-  return pricePart(model, usage, "usage", factor, fast);
+  return pricePart(model, usage, "usage", factor, fast, unknown);
+}
+
+/** Every category at the highest rate of any priced model (either tier), and the highest fast-mode factor. */
+const HIGHEST_PRICING: ModelPricing = highestPricing();
+
+function highestPricing(): ModelPricing {
+  const rates = { input: 0, cacheWrite5m: 0, cacheWrite1h: 0, cacheRead: 0, output: 0 };
+  let fast = 1;
+  for (const pricing of Object.values(PRICING)) {
+    for (const tier of [pricing.rates, pricing.longPrompt?.rates]) {
+      if (!tier) continue;
+      for (const key of Object.keys(rates) as (keyof TokenRates)[]) rates[key] = Math.max(rates[key], tier[key]);
+    }
+    if (pricing.fastModeMultiplier !== undefined) fast = Math.max(fast, pricing.fastModeMultiplier);
+  }
+  return Object.freeze({ rates: Object.freeze(rates), fastModeMultiplier: fast });
 }
 
 /** Fallback and advisor entries name the model that ran; message entries may (null means the requested model). */
@@ -202,8 +264,22 @@ function iterationModel(entry: unknown, requested: string, where: string): strin
   return typeof named === "string" && named !== "" ? named : requested;
 }
 
-function pricePart(model: string, usage: UsageCounts, where: string, factor: number, fast: boolean): number {
-  const pricing = requirePricing(model);
+function pricePart(
+  model: string,
+  usage: UsageCounts,
+  where: string,
+  factor: number,
+  fast: boolean,
+  unknown?: Set<string>,
+): number {
+  let pricing: ModelPricing;
+  const listed = unknown ? pricingFor(model) : undefined;
+  if (unknown && !listed) {
+    unknown.add(model);
+    pricing = HIGHEST_PRICING;
+  } else {
+    pricing = listed ?? requirePricing(model);
+  }
   return priceCounts(pricing, countsOf(usage, where), factor * (fast ? fastFactor(model, pricing) : 1));
 }
 

@@ -29,6 +29,8 @@ import {
   DEFAULT_SEARCH_LIMIT,
   DELIVERY_STATUSES,
   DRAFT_SCORES,
+  expectedSkillVersion,
+  finishWorker,
   jobFields,
   jobOutcome,
   makeClock,
@@ -425,16 +427,19 @@ function skillsRepo(sql: Sql, t: SqliteTables, clock: Clock): Storage["skills"] 
       ]);
       return sql.all(`SELECT * FROM ${t.skills} ${where} ORDER BY name, id`, params).map(skillFromRow);
     },
-    async update(id, changeInput, metaInput) {
+    async update(id, changeInput, metaInput, expectedVersion) {
       const content = skillChange(changeInput);
       const meta = skillVersionMeta(metaInput);
+      const expected = expectedSkillVersion(expectedVersion);
       const at = clock.nowIso();
       return sql.tx(() => {
-        const skill = updateOne(id, "description = ?, body = ?, version = version + 1, updated_at = ?", [
-          content.description,
-          content.body,
-          at,
-        ]);
+        // Compare-and-set: the WHERE on the version makes a change computed from an older version a no-op.
+        const row = sql.get(
+          `UPDATE ${t.skills} SET description = ?, body = ?, version = version + 1, updated_at = ?
+           WHERE id = ? AND version = ? RETURNING *`,
+          [content.description, content.body, at, id, expected],
+        );
+        const skill = row ? skillFromRow(row) : null;
         if (skill) {
           const version = { skillId: id, version: skill.version, ...content, createdAt: at, ...meta };
           sql.run(...insertSql(t.skill_versions, toRow("skill_versions", version)));
@@ -621,8 +626,13 @@ function jobsRepo(sql: Sql, t: SqliteTables, clock: Clock): Storage["jobs"] {
       const jobs = rows.map(jobFromRow);
       return jobs.sort((a, b) => compareText(a.nextRunAt ?? "", b.nextRunAt ?? "") || compareText(a.id, b.id));
     },
-    async finish(id, outcome) {
-      return updateOne(id, { ...toRow("jobs", jobOutcome(outcome)), locked_until: null, locked_by: null });
+    async finish(id, outcome, worker) {
+      const changes = { ...toRow("jobs", jobOutcome(outcome)), locked_until: null, locked_by: null };
+      const owner = finishWorker(worker);
+      const [set, params] = setList(changes);
+      // Only the worker that holds the lease may save the outcome and release it (one atomic statement).
+      const row = sql.get(`UPDATE ${t.jobs} SET ${set} WHERE id = ? AND locked_by = ? RETURNING *`, [...params, id, owner]);
+      return row ? jobFromRow(row) : null;
     },
     async setEnabled(id, enabled) {
       return updateOne(id, { enabled: requireBoolean(enabled, "Job enabled") });

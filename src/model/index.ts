@@ -6,8 +6,8 @@ export {
   buildStreamParams,
 } from "./client.js";
 export type { AnthropicModelClientOptions, CountTokensParams, StreamParams } from "./client.js";
-export { CostTracker, costOf, estimateBudgetCost, estimateMaxCost } from "./cost.js";
-export type { BudgetCostOptions, CostOptions, CostTrackerOptions, CostUsage } from "./cost.js";
+export { CostTracker, conservativeCostOf, costOf, estimateBudgetCost, estimateMaxCost } from "./cost.js";
+export type { BudgetCostOptions, ConservativeCost, CostOptions, CostTrackerOptions, CostUsage } from "./cost.js";
 export { backoff, classifyError, isLikelyContextOverflow, parseRetryAfter } from "./errors.js";
 export type { BackoffOptions, OverflowContext } from "./errors.js";
 export {

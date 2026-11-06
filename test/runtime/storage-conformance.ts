@@ -798,34 +798,81 @@ export function runStorageConformance(name: string, makeStorage: MakeStorage): v
           skill.id,
           { description: "Write release notes.", body: "Step one." },
           { createdBy: "review", proposalId: "p-1" },
+          1,
         );
         expect(v2).toMatchObject({ version: 2, description: "Write release notes.", body: "Step one.", updatedAt: at(1) });
         setNow(2);
-        await storage.skills.update(skill.id, { description: "v3", body: "Step two." }, { createdBy: "user:emil", proposalId: null });
+        await storage.skills.update(skill.id, { description: "v3", body: "Step two." }, { createdBy: "user:emil", proposalId: null }, 2);
         const versions = await storage.skills.versions(skill.id);
         expect(versions.map((v) => [v.version, v.body, v.createdBy, v.proposalId, v.createdAt])).toEqual([
           [1, "1. Read the changelog.\n2. Group by area.", "user:emil", null, at(0)],
           [2, "Step one.", "review", "p-1", at(1)],
           [3, "Step two.", "user:emil", null, at(2)],
         ]);
-        expect(await storage.skills.update("missing", { description: "d", body: "b" }, { createdBy: "x", proposalId: null })).toBeNull();
+        expect(await storage.skills.update("missing", { description: "d", body: "b" }, { createdBy: "x", proposalId: null }, 1)).toBeNull();
         expect(await storage.skills.versions("missing")).toEqual([]);
       });
 
-      it("concurrent updates each get their own version", async () => {
+      it("update is a compare-and-set on the version: a change computed from an older version writes nothing", async () => {
+        const skill = await newSkill();
+        const meta = { createdBy: "user:emil", proposalId: null };
+        const first = await storage.skills.update(skill.id, { description: "First.", body: "A" }, meta, 1);
+        expect(first).toMatchObject({ version: 2, body: "A" });
+        // A second change computed from version 1 (it has not seen "A") is refused and leaves no trace.
+        expect(await storage.skills.update(skill.id, { description: "Second.", body: "B" }, meta, 1)).toBeNull();
+        expect(await storage.skills.update(skill.id, { description: "Ahead.", body: "C" }, meta, 3)).toBeNull();
+        expect(await storage.skills.get("agent-a", "release-notes")).toMatchObject({ version: 2, body: "A", description: "First." });
+        expect((await storage.skills.versions(skill.id)).map((v) => [v.version, v.body])).toEqual([
+          [1, "1. Read the changelog.\n2. Group by area."],
+          [2, "A"],
+        ]);
+        // On the current version it writes.
+        expect(await storage.skills.update(skill.id, { description: "Second.", body: "AB" }, meta, 2)).toMatchObject({ version: 3, body: "AB" });
+        for (const bad of [0, -1, 1.5, Number.NaN, "2", undefined]) {
+          await expect(
+            storage.skills.update(skill.id, { description: "d", body: "b" }, meta, bad as number),
+          ).rejects.toBeInstanceOf(StorageError);
+        }
+        expect((await storage.skills.versions(skill.id)).map((v) => v.version)).toEqual([1, 2, 3]);
+      });
+
+      it("concurrent updates from the same version: exactly one wins, none is lost silently", async () => {
         const skill = await newSkill();
         const results = await Promise.all(
           Array.from({ length: 5 }, (_, i) =>
-            storage.skills.update(skill.id, { description: `d${i}`, body: `b${i}` }, { createdBy: "review", proposalId: null }),
+            storage.skills.update(skill.id, { description: `d${i}`, body: `b${i}` }, { createdBy: "review", proposalId: null }, 1),
           ),
         );
-        expect(results.map((r) => r?.version).sort()).toEqual([2, 3, 4, 5, 6]);
+        const winners = results.filter((r) => r !== null);
+        expect(winners).toHaveLength(1);
+        expect(winners[0]?.version).toBe(2);
+        const versions = await storage.skills.versions(skill.id);
+        expect(versions.map((v) => v.version)).toEqual([1, 2]);
+        expect(versions[1]?.body).toBe(winners[0]?.body);
+        expect((await storage.skills.get("agent-a", "release-notes"))?.body).toBe(winners[0]?.body);
+      });
+
+      it("concurrent updates that each read the latest version all land, each with its own version", async () => {
+        const skill = await newSkill();
+        const meta = { createdBy: "review", proposalId: null };
+        // Each writer retries on a fresh read until its change lands (what SkillService does once).
+        const write = async (i: number): Promise<number> => {
+          for (;;) {
+            const current = await storage.skills.get("agent-a", "release-notes");
+            const done = await storage.skills.update(skill.id, { description: `d${i}`, body: `${current?.body} b${i}` }, meta, current!.version);
+            if (done) return done.version;
+          }
+        };
+        const versions = await Promise.all([0, 1, 2, 3, 4].map(write));
+        expect([...versions].sort()).toEqual([2, 3, 4, 5, 6]);
+        const body = (await storage.skills.get("agent-a", "release-notes"))?.body ?? "";
+        for (let i = 0; i < 5; i++) expect(body).toContain(` b${i}`);
         expect((await storage.skills.versions(skill.id)).map((v) => v.version)).toEqual([1, 2, 3, 4, 5, 6]);
       });
 
       it("setStatus archived keeps the skill and its history (nothing is ever deleted)", async () => {
         const skill = await newSkill();
-        await storage.skills.update(skill.id, { description: "d", body: "b" }, { createdBy: "review", proposalId: null });
+        await storage.skills.update(skill.id, { description: "d", body: "b" }, { createdBy: "review", proposalId: null }, 1);
         const archived = await storage.skills.setStatus(skill.id, "archived");
         expect(archived).toMatchObject({ status: "archived", version: 2, updatedAt: at(0) });
         expect(await storage.skills.get("agent-a", "release-notes")).toEqual(archived);
@@ -1086,7 +1133,7 @@ export function runStorageConformance(name: string, makeStorage: MakeStorage): v
       it("upsert by id updates the given fields and keeps run state; without an id it matches by agent and name", async () => {
         const job = await storage.jobs.upsert(jobInput({ id: "j-1", skills: ["calendar"], nextRunAt: at(0) }));
         await storage.jobs.claimDue(at(0), { leaseMs: 60_000, worker: "w" });
-        await storage.jobs.finish("j-1", { lastRunAt: at(0), lastStatus: "error", lastError: "boom", nextRunAt: at(5), failures: 1 });
+        await storage.jobs.finish("j-1", { lastRunAt: at(0), lastStatus: "error", lastError: "boom", nextRunAt: at(5), failures: 1 }, "w");
         const updated = await storage.jobs.upsert({ ...jobInput(), id: "j-1", prompt: "New prompt", preStep: "fetch-calendar" });
         expect(updated).toMatchObject({
           id: job.id,
@@ -1190,16 +1237,83 @@ export function runStorageConformance(name: string, makeStorage: MakeStorage): v
           lastError: null,
           nextRunAt: at(60),
           failures: 0,
-        });
+        }, "w1");
         expect(done).toMatchObject({ lastRunAt: at(0), lastStatus: "silent", nextRunAt: at(60), lockedUntil: null, lockedBy: null });
         expect(await storage.jobs.claimDue(at(30), { leaseMs: 1_000, worker: "w2" })).toEqual([]);
         expect((await storage.jobs.claimDue(at(60), { leaseMs: 1_000, worker: "w2" })).map((j) => j.id)).toEqual([job.id]);
         expect(
-          await storage.jobs.finish("missing", { lastRunAt: null, lastStatus: null, lastError: null, nextRunAt: null, failures: 0 }),
+          await storage.jobs.finish("missing", { lastRunAt: null, lastStatus: null, lastError: null, nextRunAt: null, failures: 0 }, "w2"),
         ).toBeNull();
         await expect(
-          storage.jobs.finish(job.id, { lastRunAt: at(0), lastStatus: "great" as "ok", lastError: null, nextRunAt: null, failures: 0 }),
+          storage.jobs.finish(job.id, { lastRunAt: at(0), lastStatus: "great" as "ok", lastError: null, nextRunAt: null, failures: 0 }, "w2"),
         ).rejects.toBeInstanceOf(StorageError);
+        for (const worker of ["", undefined, 7]) {
+          await expect(
+            storage.jobs.finish(job.id, { lastRunAt: at(0), lastStatus: "ok", lastError: null, nextRunAt: null, failures: 0 }, worker as string),
+          ).rejects.toBeInstanceOf(StorageError);
+        }
+        expect(await storage.jobs.get(job.id)).toMatchObject({ lockedBy: "w2", lastStatus: "silent" });
+      });
+
+      it("finish by a worker that lost its lease is a no-op: it never releases another worker's lease", async () => {
+        const job = await storage.jobs.upsert(jobInput({ nextRunAt: at(0) }));
+        expect(await storage.jobs.claimDue(at(0), { leaseMs: 5 * 60_000, worker: "A" })).toHaveLength(1);
+        // A's run outlasts its lease; B claims the job after the lease ran out and starts running it.
+        const [b] = await storage.jobs.claimDue(at(5.5), { leaseMs: 5 * 60_000, worker: "B" });
+        expect(b).toMatchObject({ id: job.id, lockedBy: "B", lockedUntil: at(10.5) });
+        // A finally finishes: nothing is saved, and B keeps its lease.
+        const late = await storage.jobs.finish(
+          job.id,
+          { lastRunAt: at(0), lastStatus: "error", lastError: "lease ran out", nextRunAt: at(7), failures: 1 },
+          "A",
+        );
+        expect(late).toBeNull();
+        expect(await storage.jobs.get(job.id)).toMatchObject({
+          lockedBy: "B",
+          lockedUntil: at(10.5),
+          lastStatus: null,
+          lastError: null,
+          failures: 0,
+          nextRunAt: at(0),
+        });
+        // A third worker cannot take the job while B's lease runs.
+        expect(await storage.jobs.claimDue(at(7), { leaseMs: 5 * 60_000, worker: "C" })).toEqual([]);
+        // B's own finish saves its outcome and releases the lease.
+        const done = await storage.jobs.finish(
+          job.id,
+          { lastRunAt: at(5.5), lastStatus: "ok", lastError: null, nextRunAt: at(15), failures: 0 },
+          "B",
+        );
+        expect(done).toMatchObject({ lastStatus: "ok", nextRunAt: at(15), lockedBy: null, lockedUntil: null });
+        // Once released, a finish by anyone (B again included) changes nothing.
+        const outcome = { lastRunAt: at(9), lastStatus: "error" as const, lastError: "x", nextRunAt: at(9), failures: 3 };
+        expect(await storage.jobs.finish(job.id, outcome, "B")).toBeNull();
+        expect(await storage.jobs.finish(job.id, outcome, "A")).toBeNull();
+        expect(await storage.jobs.get(job.id)).toMatchObject({ lastStatus: "ok", nextRunAt: at(15), failures: 0 });
+      });
+
+      it("finish by the holder still works after its lease expired, as long as nobody claimed the job", async () => {
+        const job = await storage.jobs.upsert(jobInput({ nextRunAt: at(0) }));
+        await storage.jobs.claimDue(at(0), { leaseMs: 60_000, worker: "A" });
+        const done = await storage.jobs.finish(
+          job.id,
+          { lastRunAt: at(0), lastStatus: "ok", lastError: null, nextRunAt: at(30), failures: 0 },
+          "A",
+        );
+        expect(done).toMatchObject({ lastStatus: "ok", lockedBy: null, lockedUntil: null });
+      });
+
+      it("concurrent finishes by the holder and a stale worker: only the holder's outcome is kept", async () => {
+        const job = await storage.jobs.upsert(jobInput({ nextRunAt: at(0) }));
+        await storage.jobs.claimDue(at(0), { leaseMs: 60_000, worker: "A" });
+        await storage.jobs.claimDue(at(2), { leaseMs: 60_000, worker: "B" });
+        const [a, b] = await Promise.all([
+          storage.jobs.finish(job.id, { lastRunAt: at(0), lastStatus: "error", lastError: "late", nextRunAt: at(1), failures: 1 }, "A"),
+          storage.jobs.finish(job.id, { lastRunAt: at(2), lastStatus: "ok", lastError: null, nextRunAt: at(60), failures: 0 }, "B"),
+        ]);
+        expect(a).toBeNull();
+        expect(b).toMatchObject({ lastStatus: "ok", nextRunAt: at(60) });
+        expect(await storage.jobs.get(job.id)).toMatchObject({ lastStatus: "ok", nextRunAt: at(60), failures: 0, lockedBy: null });
       });
 
       it("setEnabled turns a job off and on; a disabled job is never claimed", async () => {

@@ -15,9 +15,11 @@
  *    (src/loop/job-runner.ts).
  * 6. Final text exactly "[SILENT]" (trimmed) → silent: nothing is delivered. Empty text → error. Otherwise the text
  *    is delivered to the job's target, resolved again at delivery time.
- * 7. The outcome is saved with `jobs.finish`: nextRunAt is the next cron time after now in the job's zone, so runs
- *    missed while nothing was ticking collapse into one. On an error, failures + 1, lastError (redacted), and
- *    nextRunAt = the later of the next cron time and now + backoff (1, 2, 4 … up to 60 minutes).
+ * 7. The outcome is saved with `jobs.finish` (by this scheduler's worker id: a scheduler whose lease was taken over
+ *    saves nothing and leaves the other lease alone). nextRunAt is the next cron time after the run ended, in the
+ *    job's zone, so runs missed while nothing was ticking (or while a slow run was running) collapse into one. On
+ *    an error, failures + 1, lastError (redacted), and nextRunAt = the later of the next cron time and the end of
+ *    the run + backoff (1, 2, 4 … up to 60 minutes), so a slow failing job is never re-run back to back.
  *
  * Leases: `leaseMs` (default 5 minutes) must be longer than the longest run (keep the run's wall-clock budget
  * below it). The run's signal aborts when the lease runs out, and output that arrives after that is not delivered,
@@ -26,7 +28,8 @@
 import { randomUUID } from "node:crypto";
 import type { ChannelRegistry } from "../channels/channel.js";
 import { parseDeliveryTarget } from "../channels/channel.js";
-import { defaultRedactor, describeError, truncateChars } from "../channels/util.js";
+import { describeError, truncateChars } from "../channels/util.js";
+import { secretsRedactor } from "../safety/redact.js";
 import type { DeliveryMessage, JobRecord, NewJob, PreStep, Redactor, Storage, TickReport } from "../types.js";
 import { nextRun } from "./cron.js";
 
@@ -68,7 +71,7 @@ export interface SchedulerOptions {
   /** At most this many jobs per tick; they run one after another. Default 25. */
   maxJobsPerTick?: number;
   now?: () => Date;
-  /** Applied to error text before it is stored or reported. Default: a secrets redactor. */
+  /** Applied to error text before it is stored or reported. Default: secretsRedactor (src/safety/redact.ts). */
   redact?: Redactor;
   /** Builds the delivered message. Default: `{ title: job.name, body: text }`. */
   formatMessage?: (job: JobRecord, text: string) => DeliveryMessage;
@@ -139,13 +142,14 @@ export class Scheduler {
       throw new RangeError("Scheduler: maxJobsPerTick must be a whole number of at least 1.");
     }
     this.now = options.now ?? (() => new Date());
-    this.redact = options.redact ?? defaultRedactor;
+    this.redact = options.redact ?? secretsRedactor;
     this.formatMessage = options.formatMessage ?? ((job, text) => ({ title: job.name, body: text }));
   }
 
   /**
    * Runs every job that is due, one at a time, and reports what happened. `now` (default: the clock) is used for
-   * claiming and for the next run times. Throws only when storage cannot claim jobs.
+   * claiming and is each job's lastRunAt; the next run times count from the end of each run (`now` plus the run's
+   * duration by the scheduler's clock, in whole seconds). Throws only when storage cannot claim jobs.
    */
   async tick(now?: Date): Promise<TickReport> {
     if (now !== undefined && !isValidDate(now)) throw new TypeError("Scheduler.tick: now must be a valid Date.");
@@ -175,14 +179,34 @@ export class Scheduler {
       } catch (err) {
         scheduleError = describeError(err);
       }
+      const started = this.clockOr(now);
       const evaluation =
         scheduleError === null
           ? await this.evaluate(job, now, lease)
           : this.fail(`The job's schedule cannot be used: ${scheduleError}`);
+      // The next run and the retry are counted from when the run ended, not from when it was claimed: a run that
+      // outlasts its interval or its backoff must not be due again at once (and run back to back in one tick).
+      const finishedAt = this.finishTime(now, started);
+      if (scheduleError === null) {
+        try {
+          next = nextRun(job.schedule, finishedAt, job.timeZone);
+        } catch {
+          // Keep the time computed from the claim (the schedule itself was valid a moment ago).
+        }
+      }
       let status = evaluation.status;
       let error = evaluation.error;
       try {
-        await this.storage.jobs.finish(job.id, this.outcome(job, now, evaluation, next));
+        const saved = await this.storage.jobs.finish(job.id, this.outcome(job, now, finishedAt, evaluation, next), this.worker);
+        if (saved === null) {
+          // The lease ran out and another scheduler claimed the job (or it was removed): its outcome is that
+          // scheduler's to save, and its lease is left alone.
+          status = "error";
+          error = this.clean(
+            `The job's lease (${this.leaseMs} ms) was lost before its outcome was saved, so this run's outcome was ` +
+              "not recorded: another scheduler may hold the job now. Raise leaseMs or lower the run's time budget.",
+          );
+        }
       } catch (err) {
         status = "error";
         error = this.clean(`The job's outcome could not be saved: ${describeError(err)}`);
@@ -271,12 +295,16 @@ export class Scheduler {
     return output;
   }
 
-  private outcome(job: JobRecord, now: Date, evaluation: Evaluation, next: Date | null): JobOutcome {
+  /**
+   * `next` is the next cron time after `finishedAt`; the backoff also starts at `finishedAt`. lastRunAt stays the
+   * time the run was claimed (`now`).
+   */
+  private outcome(job: JobRecord, now: Date, finishedAt: Date, evaluation: Evaluation, next: Date | null): JobOutcome {
     const lastRunAt = now.toISOString();
     const previous = Number.isSafeInteger(job.failures) && job.failures > 0 ? job.failures : 0;
     if (evaluation.status === "error") {
       const failures = previous + 1;
-      const retryAt = now.getTime() + failureBackoffMs(failures);
+      const retryAt = finishedAt.getTime() + failureBackoffMs(failures);
       const nextRunAt = next === null ? null : new Date(Math.max(next.getTime(), retryAt)).toISOString();
       return { lastRunAt, lastStatus: "error", lastError: evaluation.error ?? "The job failed.", nextRunAt, failures };
     }
@@ -299,6 +327,25 @@ export class Scheduler {
     } catch {
       return "The error text could not be redacted, so it was not kept.";
     }
+  }
+
+  /** The clock, or `fallback` when the clock fails (it is only read to measure a run here). */
+  private clockOr(fallback: Date): Date {
+    try {
+      return this.clock();
+    } catch {
+      return fallback;
+    }
+  }
+
+  /**
+   * When the run ended, on the tick's time line: the tick's time plus how long the run took by the scheduler's
+   * clock (whole seconds, so a quick run keeps cron-exact times). Never before the tick's time.
+   */
+  private finishTime(now: Date, started: Date): Date {
+    const elapsed = this.clockOr(started).getTime() - started.getTime();
+    const seconds = elapsed > 0 ? Math.floor(elapsed / 1_000) : 0;
+    return new Date(now.getTime() + seconds * 1_000);
   }
 
   private clock(): Date {

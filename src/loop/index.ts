@@ -30,6 +30,7 @@ export {
   REFERENCE_ONLY,
   SUMMARY_HEADINGS,
   SUMMARY_SYSTEM,
+  atTurnBoundary,
   buildSummaryRequest,
   compressConversation,
   estimatePromptTokens,

@@ -515,11 +515,17 @@ export interface Storage {
     ): Promise<SkillRecord>;
     get(agentId: Id, name: string): Promise<SkillRecord | null>;
     list(agentId: Id, options?: { status?: SkillStatus }): Promise<SkillRecord[]>;
-    /** Writes a new version row and bumps `version`; never overwrites history. */
+    /**
+     * Writes a new version row and bumps `version`; never overwrites history. Compare-and-set: writes only if the
+     * stored version equals `expectedVersion` (the version the change was computed from), so two concurrent
+     * changes computed from the same version never silently lose one. Returns null when there is no such skill or
+     * its version moved (nothing is written then); read it again to tell the two apart.
+     */
     update(
       id: Id,
       change: Pick<SkillRecord, "description" | "body">,
       meta: { createdBy: string; proposalId: Id | null },
+      expectedVersion: number,
     ): Promise<SkillRecord | null>;
     setStatus(id: Id, status: SkillStatus): Promise<SkillRecord | null>;
     setPinned(id: Id, pinned: boolean): Promise<SkillRecord | null>;
@@ -562,10 +568,16 @@ export interface Storage {
     /** Atomically leases up to `limit` enabled jobs with nextRunAt ≤ now that are not leased (or whose lease
      * expired). Two concurrent claimers never get the same job. */
     claimDue(now: IsoTime, options: { leaseMs: number; worker: string; limit?: number }): Promise<JobRecord[]>;
-    /** Records a run's outcome and releases the lease. */
+    /**
+     * Records a run's outcome and releases the lease, but only while `worker` still holds it (lockedBy = worker,
+     * checked atomically with the write). A worker whose lease ran out and was claimed by another worker (or that
+     * never held one) changes nothing: the call returns null, as it does for a job that does not exist. So a slow
+     * worker can never release a lease another worker holds, and the job never runs twice at once.
+     */
     finish(
       id: Id,
       outcome: Pick<JobRecord, "lastRunAt" | "lastStatus" | "lastError" | "nextRunAt" | "failures">,
+      worker: string,
     ): Promise<JobRecord | null>;
     setEnabled(id: Id, enabled: boolean): Promise<JobRecord | null>;
   };

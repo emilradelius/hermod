@@ -26,10 +26,11 @@ export { NOTHING_TO_SAVE, REVIEW_SYSTEM_PROMPT, reviewUserMessage } from "./revi
 export { DEFAULT_REVIEW_THRESHOLDS, markReviewed, shouldReview } from "./triggers.js";
 export type { ReviewDue, ReviewThresholds } from "./triggers.js";
 export {
-  CURATOR_ACTOR,
+  CurationError,
   DEFAULT_ARCHIVE_DAYS,
   DEFAULT_STALE_DAYS,
+  applyCuration,
   curate,
   curatedStatus,
 } from "./curator.js";
-export type { CurateOptions, CuratorChange, CuratorReport } from "./curator.js";
+export type { CurateOptions, CurationResult, CuratorChange, CuratorReport } from "./curator.js";

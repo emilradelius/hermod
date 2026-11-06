@@ -9,6 +9,11 @@
  *    "Reference only; persistent memory is authoritative", plus "continue"), optionally followed by a token-budgeted
  *    tail of the most recent turns with every thinking / redacted_thinking block stripped (only text, tool_use and
  *    tool_result survive). The tail never starts with a tool_result whose tool_use was cut off.
+ *    A tail is kept only at a real turn boundary: the last message is a user turn with no tool_result. In the middle
+ *    of a tool loop (the last message holds the tool results the model has not answered yet, or the model paused)
+ *    nothing is replayed after the summary (claude-api skill, "simple compaction"): the assistant turn those results
+ *    answer would have to go back with its thinking blocks exactly as received, and thinking blocks replayed after a
+ *    summary fail the conversation check (keep-tail compaction). The tool results are in the summary's transcript.
  * 4. Nothing earlier is edited in place: the old list is left as it was and a new one is returned. The system prompt
  *    and tools stay the same (frozen for the session).
  */
@@ -109,15 +114,26 @@ export function stripForTail(message: MessageParam): MessageParam | null {
 }
 
 /**
+ * True when the last message is a user turn with no tool_result: the model's previous turn is over and a new one
+ * starts. After a tool round (results not yet answered) or a paused turn this is false.
+ */
+export function atTurnBoundary(messages: readonly MessageParam[]): boolean {
+  const last = messages[messages.length - 1];
+  return last !== undefined && last.role === "user" && !hasToolResult(last);
+}
+
+/**
  * The most recent turns that fit in `tailTokens`, stripped for the tail. The tail starts at an assistant turn or
  * at a user turn without tool results (so every tool_result in it has its tool_use), never at the first message,
- * and is empty when nothing fits. Throws if a tool_use is still waiting for its result.
+ * and is empty when nothing fits or when the conversation is not at a turn boundary (atTurnBoundary): in a tool
+ * loop the assistant turn that the trailing tool results answer must never be replayed with its thinking stripped.
+ * Throws if a tool_use is still waiting for its result.
  */
 export function selectTail(messages: readonly MessageParam[], tailTokens: number): MessageParam[] {
   if (hasPendingToolUse(messages)) {
     throw new Error("selectTail: a tool_use is still waiting for its result; compress only at a turn boundary.");
   }
-  if (!(tailTokens > 0)) return [];
+  if (!(tailTokens > 0) || !atTurnBoundary(messages)) return [];
   const stripped = messages.map((message) => stripForTail(message));
   let used = 0;
   let start = -1;

@@ -6,7 +6,11 @@
  *   streaming means the API no longer validates input, so the loop always does).
  * - Every valid call goes through ApprovalPolicy.decide({ mode, attended, tainted, tool, input }):
  *   allow → run; propose → an action proposal (a draft for a person; nothing runs); deny → is_error with the reason
- *   and an audit entry. The hard denylist is part of the policy and applies in every mode.
+ *   and an audit entry. The hard denylist is part of the policy and applies in every mode. Each call is decided
+ *   once (the decision made while grouping parallel reads is the one used to run them).
+ * - An action proposal gets the same injection scan as ProposalService.create (src/proposals/record.ts): a payload
+ *   or rationale that looks like prompt injection is refused (is_error "proposal_refused", audited
+ *   "tool.propose.refused") and nothing is stored.
  * - Consecutive allowed read-only calls run in parallel; everything else runs one at a time, decided at its turn
  *   (so a side effect is decided after every earlier result, untrusted ones included, has arrived). Before each
  *   parallel group and each single call the agent's mode is re-read (ToolEnv.currentMode): off set during the round
@@ -21,6 +25,7 @@
  *   An output that cannot be serialised (a toJSON that throws) gives an output_error whose text is redacted, cut and
  *   wrapped the same way.
  */
+import { collectStrings, injectionProblems } from "../proposals/record.js";
 import { createNonce, wrapUntrusted } from "../safety/untrusted.js";
 import type {
   AgentMode,
@@ -134,18 +139,27 @@ export async function runToolRound(
       i += 1;
       continue;
     }
-    const group: number[] = [];
+    // Each call is decided once: the decision made while grouping is the one handle() uses. A decision for the call
+    // that ends a non-empty group is not kept, since that call is decided again after the group's results arrive.
+    const group: { index: number; decided: Decided }[] = [];
+    let firstDecided: Decided | undefined;
     while (i + group.length < prepared.length) {
-      const item = prepared[i + group.length] as Prepared;
-      if (item.kind !== "ready" || !isParallelSafe(item.tool) || decide(item, env).decision !== "allow") break;
-      group.push(i + group.length);
+      const index = i + group.length;
+      const item = prepared[index] as Prepared;
+      if (item.kind !== "ready" || !isParallelSafe(item.tool)) break;
+      const decided = decide(item, env);
+      if (decided.decision !== "allow") {
+        if (group.length === 0) firstDecided = decided;
+        break;
+      }
+      group.push({ index, decided });
     }
     if (group.length > 0) {
-      const done = await Promise.all(group.map((index) => handle(prepared[index] as Prepared, env)));
-      done.forEach((outcome, k) => (outcomes[group[k] as number] = outcome));
+      const done = await Promise.all(group.map(({ index, decided }) => handle(prepared[index] as Prepared, env, decided)));
+      group.forEach(({ index }, k) => (outcomes[index] = done[k] as ToolOutcome));
       i += group.length;
     } else {
-      outcomes[i] = await handle(next, env);
+      outcomes[i] = await handle(next, env, firstDecided);
       i += 1;
     }
   }
@@ -172,7 +186,9 @@ function prepare(block: ToolUseLike, registry: ToolRegistry): Prepared {
   return { kind: "ready", block, tool, input: parsed.data };
 }
 
-function decide(item: Extract<Prepared, { kind: "ready" }>, env: ToolEnv): { decision: ApprovalDecision; reason: string } {
+type Decided = { decision: ApprovalDecision; reason: string };
+
+function decide(item: Extract<Prepared, { kind: "ready" }>, env: ToolEnv): Decided {
   try {
     const result = env.approvals.decide({
       mode: env.mode,
@@ -190,7 +206,8 @@ function decide(item: Extract<Prepared, { kind: "ready" }>, env: ToolEnv): { dec
   }
 }
 
-async function handle(item: Prepared, env: ToolEnv): Promise<ToolOutcome> {
+/** Runs, proposes or denies one call. `decided` is the decision already made for it in this state, if any. */
+async function handle(item: Prepared, env: ToolEnv, decided?: Decided): Promise<ToolOutcome> {
   const started = Date.now();
   const { block } = item;
   if (item.kind === "unknown") {
@@ -200,7 +217,7 @@ async function handle(item: Prepared, env: ToolEnv): Promise<ToolOutcome> {
     return errorOutcome(block, "deny", "invalid_input", `The input does not match the schema: ${item.message}`, started);
   }
   if (env.signal?.aborted) return errorOutcome(block, "deny", "aborted", "The run was cancelled before this call ran.", started);
-  const { decision, reason } = decide(item, env);
+  const { decision, reason } = decided ?? decide(item, env);
   if (decision === "deny") {
     await audit(env, "tool.deny", item.tool.name, { toolUseId: block.id, reason, mode: env.mode, attended: env.attended });
     return errorOutcome(block, "deny", "denied", `Not run: ${reason}`, started);
@@ -224,14 +241,29 @@ async function propose(
   const { block, tool } = item;
   let proposalId: Id;
   try {
+    const payload = { kind: "action" as const, tool: tool.name, input: redactDeep(item.input, env.redactor) };
+    const rationale = env.redactor(reason || `The call to "${tool.name}" needs a person's approval.`);
+    // The same injection scan (and outcome) as ProposalService.create and recordProposal: a payload or rationale
+    // that looks like prompt injection is refused and nothing is stored.
+    const problems = injectionProblems([...collectStrings(payload), rationale]);
+    if (problems.length > 0) {
+      await audit(env, "tool.propose.refused", tool.name, { toolUseId: block.id, code: "injection", problems, mode: env.mode });
+      return errorOutcome(
+        block,
+        "propose",
+        "proposal_refused",
+        `Not run and not queued: the call looks like prompt injection (${problems.join(" ")}).`,
+        started,
+      );
+    }
     const proposal = await env.storage.proposals.create({
       agentId: env.agentId,
       sessionId: env.sessionId,
       kind: "action",
       target: tool.name,
-      payload: { kind: "action", tool: tool.name, input: redactDeep(item.input, env.redactor) },
+      payload,
       evidence: env.evidenceMessageId ? [{ kind: "message", ref: env.evidenceMessageId }] : [],
-      rationale: env.redactor(reason || `The call to "${tool.name}" needs a person's approval.`),
+      rationale,
       createdBy: env.actor,
       shadow: env.mode === "shadow",
     });

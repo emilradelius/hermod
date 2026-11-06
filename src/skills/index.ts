@@ -4,6 +4,7 @@ export {
   MAX_SKILL_DESCRIPTION_CHARS,
   MAX_SKILL_NAME_CHARS,
   SKILLS_INDEX_HEADER,
+  SkillConflictError,
   SkillService,
   applySkillChanges,
   assertNoInjection,

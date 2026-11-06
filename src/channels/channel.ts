@@ -8,7 +8,8 @@
  * - Channels are used by application code and the scheduler. They are never exposed to the model as tools.
  */
 import type { Channel, DeliveryMessage, DeliveryResult, Id, Redactor, Storage } from "../types.js";
-import { defaultRedactor, describeError, hasControlCharacters, isDeliveryMessage, quote, truncateChars } from "./util.js";
+import { secretsRedactor } from "../safety/redact.js";
+import { describeError, hasControlCharacters, isDeliveryMessage, quote, truncateChars } from "./util.js";
 
 /** Channel names: lowercase letters, digits, "-" and "_", starting with a letter. */
 export const CHANNEL_NAME_PATTERN = /^[a-z][a-z0-9_-]{0,63}$/;
@@ -52,7 +53,7 @@ export function parseDeliveryTarget(spec: string): { channel: string; target: st
 }
 
 export interface ChannelRegistryOptions {
-  /** Applied to error text before it is stored or returned. Default: a secrets redactor. */
+  /** Applied to error text before it is stored or returned. Default: secretsRedactor (src/safety/redact.ts). */
   redact?: Redactor;
   /** A send that has not finished after this long counts as failed. Default 30 s. */
   sendTimeoutMs?: number;
@@ -70,7 +71,7 @@ export class ChannelRegistry {
   private readonly sendTimeoutMs: number;
 
   constructor(options: ChannelRegistryOptions = {}) {
-    this.redact = options.redact ?? defaultRedactor;
+    this.redact = options.redact ?? secretsRedactor;
     this.sendTimeoutMs = options.sendTimeoutMs ?? DEFAULT_SEND_TIMEOUT_MS;
     if (!(Number.isFinite(this.sendTimeoutMs) && this.sendTimeoutMs > 0)) {
       throw new RangeError("ChannelRegistry: sendTimeoutMs must be a positive number of milliseconds.");

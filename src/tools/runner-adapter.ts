@@ -25,7 +25,7 @@
 import { betaZodTool } from "@anthropic-ai/sdk/helpers/beta/zod";
 import { ToolError } from "@anthropic-ai/sdk/lib/tools/ToolError";
 import type { BetaRunnableTool } from "@anthropic-ai/sdk/lib/tools/BetaRunnableTool";
-import { isSessionTainted, markSessionTainted } from "../loop/taint.js";
+import { isSessionTainted, markSessionTainted, sessionMarkedTainted } from "../loop/taint.js";
 import { runToolRound, type ToolEnv } from "../loop/tools.js";
 import { createApprovalPolicy } from "../safety/approvals.js";
 import { secretsRedactor } from "../safety/redact.js";
@@ -80,6 +80,8 @@ async function storedTaint(storage: Storage, sessionId: Id): Promise<boolean> {
   try {
     const session = await storage.sessions.get(sessionId);
     if (!session) return false;
+    // The row's flag answers at once; the messages are listed only for a row without it (stored before the flag).
+    if (sessionMarkedTainted(session)) return true;
     return isSessionTainted(session, await storage.messages.list(sessionId));
   } catch {
     return true;

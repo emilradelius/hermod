@@ -18,7 +18,10 @@
  *   a call that would be left with too few tokens is not made and the run ends with "budget_cost". The prompt size
  *   is conservative (non-ASCII text, the last real prompt size, the long-prompt tier when it could apply), a request
  *   with the server-side refusal fallback keeps it only when two full attempts fit, and each call reserves its worst
- *   case against the monthly cap while it is in flight (per process). Errors go through classifyError: retry with
+ *   case against the monthly cap while it is in flight (per process). Every paid call leaves a cost row: a model
+ *   PRICING does not list (e.g. in usage.iterations) is charged at the highest rates of any priced model (audit
+ *   "cost.unpriced_model"), and usage that cannot be priced at all is charged the reserved worst case (audit
+ *   "cost.uncomputable", the run ends "error"). Errors go through classifyError: retry with
  *   backoff (deps.sleep) up to 3 times, then the fallback model if one is configured (one switch, then up to 3
  *   more retries), compress then retry once for a context overflow, abort otherwise. A model or tool error ends the
  *   run with a reason; runAgent never throws for one.
@@ -29,7 +32,8 @@
  *   agent's mode is re-read from storage before every call and every parallel group: one turned off during the
  *   round denies the rest, one set to shadow drafts them. A delegate's untrusted result is cut to fit
  *   maxToolOutputChars before it is wrapped.
- * - compress: see ./compress.ts (summary on the background model, restart from the summary, never edit a turn).
+ * - compress: see ./compress.ts (summary on the background model, restart from the summary, never edit a turn; a
+ *   recent tail is replayed only at a real turn boundary, never in the middle of a tool loop).
  * - taint (./taint.ts): belongs to the conversation the model sees, so it lasts for the rest of the SESSION. A run
  *   starts tainted when its parent is (inheritTainted), when the session row says so (meta.tainted), when any stored
  *   message of the session carries an untrusted wrapper (sessions stored before the flag; before or after a
@@ -159,6 +163,8 @@ type CallOutcome = { kind: "ok"; message: Message } | { kind: "compress" } | { k
 interface Fitted {
   request: ModelRequest;
   release: () => void;
+  /** The worst case reserved for the call (what it is charged when its usage cannot be priced at all). */
+  reservedUsd: number;
 }
 
 interface Settings {
@@ -273,9 +279,11 @@ export async function runAgentWith(
 
   // The reservation of the model call in flight (released once its cost is recorded, or when it failed).
   let releaseReservation: () => void = () => {};
+  let reservedUsd = 0;
   const release = (): void => {
     const done = releaseReservation;
     releaseReservation = () => {};
+    reservedUsd = 0;
     done();
   };
 
@@ -347,14 +355,15 @@ export async function runAgentWith(
         const both = clampMaxTokens(built.model, prompt, built.maxTokens, available, undefined, { ...tier, fallbackHop: true });
         if (both !== null && both === built.maxTokens) {
           const worst = estimateBudgetCost(built.model, prompt, both, { ...tier, fallbackHop: true });
-          return { request: { ...built, maxTokens: both }, release: reserveUsd(storage, state.agentId, worst) };
+          return { request: { ...built, maxTokens: both }, release: reserveUsd(storage, state.agentId, worst), reservedUsd: worst };
         }
       }
       const one = clampMaxTokens(built.model, prompt, built.maxTokens, available, undefined, tier);
       if (one === null) return null;
       const request: ModelRequest = { ...built, maxTokens: one };
       if (supportsServerFallback(built.model)) request.refusalFallback = false;
-      return { request, release: reserveUsd(storage, state.agentId, estimateBudgetCost(built.model, prompt, one, tier)) };
+      const worst = estimateBudgetCost(built.model, prompt, one, tier);
+      return { request, release: reserveUsd(storage, state.agentId, worst), reservedUsd: worst };
     };
 
     const buildRequest = (): ModelRequest => {
@@ -371,17 +380,28 @@ export async function runAgentWith(
       return request;
     };
 
+    /**
+     * Records a paid call's cost; never records nothing. A model PRICING does not list (a refusal-fallback entry in
+     * usage.iterations, say) is charged at the highest rates of any priced model, and an audit entry
+     * "cost.unpriced_model" names it; the run goes on. Usage that cannot be priced at all is charged the worst case
+     * reserved for the call ("cost.uncomputable"), and the run ends with "error" (returns false).
+     */
     const recordCost = async (message: Message, model: string, why: CallPurpose): Promise<boolean> => {
+      const worstCase = reservedUsd;
       let usd: number;
+      let unknownModels: string[] = [];
+      let uncomputable: string | null = null;
       try {
-        usd = budget.tracker.add(model, message.usage).usd;
+        const priced = budget.tracker.addConservative(model, message.usage);
+        usd = priced.usd;
+        unknownModels = priced.unknownModels;
       } catch (error) {
-        release();
-        state.errors.push({ kind: "unknown", action: "abort", message: `The call's cost could not be computed: ${messageOf(error)}` });
-        return false;
+        uncomputable = messageOf(error);
+        usd = budget.tracker.addUsd(worstCase).usd;
       }
       state.costUsd = budget.tracker.totalUsd + state.delegatedUsd;
-      const usage = message.usage;
+      const usage: Partial<Message["usage"]> =
+        message.usage !== null && typeof message.usage === "object" ? message.usage : {};
       try {
         await storage.costs.add({
           at: now().toISOString(),
@@ -389,17 +409,48 @@ export async function runAgentWith(
           sessionId: state.sessionId,
           model,
           purpose: why,
-          inputTokens: usage.input_tokens,
-          outputTokens: usage.output_tokens,
-          cacheReadTokens: usage.cache_read_input_tokens ?? 0,
-          cacheWriteTokens: usage.cache_creation_input_tokens ?? 0,
+          inputTokens: tokensOrZero(usage.input_tokens),
+          outputTokens: tokensOrZero(usage.output_tokens),
+          cacheReadTokens: tokensOrZero(usage.cache_read_input_tokens),
+          cacheWriteTokens: tokensOrZero(usage.cache_creation_input_tokens),
           costUsd: usd,
         });
       } finally {
         // Recorded (or failed to be): the call's reservation is no longer needed.
         release();
       }
+      if (unknownModels.length > 0) {
+        await storage.audit.append({
+          at: now().toISOString(),
+          actor,
+          action: "cost.unpriced_model",
+          target: model,
+          details: {
+            models: unknownModels,
+            costUsd: usd,
+            sessionId: state.sessionId,
+            note: `No price is known for ${unknownModels.join(", ")}; charged at the highest rates of any priced model. Add it to PRICING in src/model/models.ts.`,
+          },
+        });
+      }
+      if (uncomputable !== null) {
+        await storage.audit.append({
+          at: now().toISOString(),
+          actor,
+          action: "cost.uncomputable",
+          target: model,
+          details: { costUsd: usd, sessionId: state.sessionId, reason: uncomputable, note: "Charged the worst case reserved for the call." },
+        });
+      }
       callbacks?.onCost?.({ usd, totalUsd: state.costUsd, model });
+      if (uncomputable !== null) {
+        state.errors.push({
+          kind: "unknown",
+          action: "abort",
+          message: `The call's cost could not be computed (${uncomputable}); it was charged the reserved worst case of ${usd} USD.`,
+        });
+        return false;
+      }
       return true;
     };
 
@@ -421,6 +472,7 @@ export async function runAgentWith(
         if (fitted === null) return { kind: "failed", end: "budget_cost" };
         const request = fitted.request;
         releaseReservation = fitted.release;
+        reservedUsd = fitted.reservedUsd;
         try {
           const message = await client.complete(request, opts.stream);
           return { kind: "ok", message };
@@ -746,6 +798,11 @@ export async function runAgentWith(
     toolCalls: [...state.toolCalls],
     errors: [...state.errors],
   };
+}
+
+/** A token count for a cost row: the value when it is a whole number of 0 or more, else 0. */
+function tokensOrZero(value: unknown): number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : 0;
 }
 
 // ─── prepare helpers ────────────────────────────────────────────────────────────────────────────────────────

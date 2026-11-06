@@ -40,6 +40,8 @@ import {
   DELIVERY_STATUSES,
   DRAFT_SCORES,
   errorMessage,
+  expectedSkillVersion,
+  finishWorker,
   jobFields,
   jobOutcome,
   makeClock,
@@ -521,14 +523,17 @@ function skillsRepo(db: Db, t: PgTables, clock: Clock): Storage["skills"] {
       const text = `${select(t, "skills")} ${where} ORDER BY r.name COLLATE "C", r.id COLLATE "C"`;
       return (await db.rows("the skill list", text, p)).map(skillFromRow);
     },
-    async update(id, changeInput, metaInput) {
+    async update(id, changeInput, metaInput, expectedVersion) {
       const content = skillChange(changeInput);
       const meta = skillVersionMeta(metaInput);
+      const expected = expectedSkillVersion(expectedVersion);
       const p = params();
       const set = `description = ${p.add(content.description)}, body = ${p.add(content.body)},
         version = r.version + 1, updated_at = ${p.add(clock.nowIso(), "time")}`;
-      // The row lock of the UPDATE serializes concurrent updates, so each one gets its own version number.
-      const text = `WITH s AS (UPDATE ${t.skills} AS r SET ${set} WHERE r.id = ${p.add(id)} RETURNING r.*),
+      // Compare-and-set: the UPDATE's row lock serializes concurrent updates, and the version check (re-evaluated
+      // on the locked row) makes the second of two changes computed from the same version a no-op.
+      const text = `WITH s AS (UPDATE ${t.skills} AS r SET ${set}
+          WHERE r.id = ${p.add(id)} AND r.version = ${p.add(expected, pgColumnKind("skills", "version"))} RETURNING r.*),
         v AS (
           INSERT INTO ${t.skill_versions} (${versionColumns})
           SELECT s.id, s.version, s.description, s.body, s.updated_at, ${p.add(meta.createdBy)}, ${p.add(meta.proposalId)}
@@ -723,8 +728,15 @@ function jobsRepo(db: Db, t: PgTables, clock: Clock): Storage["jobs"] {
       const jobs = (await db.rows("a job claim", text, p)).map(jobFromRow);
       return jobs.sort((a, b) => compareText(a.nextRunAt ?? "", b.nextRunAt ?? "") || compareText(a.id, b.id));
     },
-    async finish(id, outcome) {
-      return updateOne(id, { ...toRow("jobs", jobOutcome(outcome)), locked_until: null, locked_by: null });
+    async finish(id, outcome, worker) {
+      const changes = { ...toRow("jobs", jobOutcome(outcome)), locked_until: null, locked_by: null };
+      const owner = finishWorker(worker);
+      const p = params();
+      const set = setList("jobs", changes, p);
+      // Only the worker that holds the lease may save the outcome and release it (one atomic statement).
+      const text = `UPDATE ${t.jobs} AS r SET ${set} WHERE r.id = ${p.add(id)} AND r.locked_by = ${p.add(owner)} ${returning("jobs")}`;
+      const row = await db.one("a job finish", text, p);
+      return row ? jobFromRow(row) : null;
     },
     async setEnabled(id, enabled) {
       return updateOne(id, { enabled: requireBoolean(enabled, "Job enabled") });
