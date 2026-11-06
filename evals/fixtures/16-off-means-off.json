@@ -1,0 +1,13 @@
+{
+  "name": "off-means-off",
+  "about": "An agent that is off: AgentOffError before anything happens; no model call, no session, no cost, no proposal.",
+  "agent": { "mode": "off" },
+  "run": { "type": "chat", "userMessage": "Hello?" },
+  "steps": [{ "text": "This must never be sent." }],
+  "expect": {
+    "throws": "AgentOffError",
+    "modelCalls": 0,
+    "scriptUsed": false,
+    "writesNothing": true
+  }
+}

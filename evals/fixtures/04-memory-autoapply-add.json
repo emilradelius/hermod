@@ -1,0 +1,17 @@
+{
+  "name": "memory-autoapply-add",
+  "about": "The one explicit exception: an add-only batch to a store whose owner allows add-only writes applies directly, audited, with no proposal.",
+  "seed": { "stores": [{ "name": "user", "capChars": 1375, "autoApply": "add", "entries": ["User works in Stockholm."] }] },
+  "run": { "type": "chat", "userMessage": "I always want metric units." },
+  "steps": [
+    { "toolUse": [{ "name": "memory", "input": { "store": "user", "ops": [{ "op": "add", "text": "User wants metric units." }] } }] },
+    { "text": "Saved." }
+  ],
+  "expect": {
+    "end": "end_turn",
+    "proposals": { "count": 0 },
+    "stores": { "user": { "entries": ["User works in Stockholm.", "User wants metric units."] } },
+    "audit": { "memory.write": 1 },
+    "costRecorded": true
+  }
+}

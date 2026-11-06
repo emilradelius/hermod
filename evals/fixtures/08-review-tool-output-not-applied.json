@@ -1,0 +1,41 @@
+{
+  "name": "review-tool-output-not-applied",
+  "about": "A fact grounded in tool output (not the user's own words) is never written directly, even to an add-only store: it is a proposal.",
+  "seed": {
+    "stores": [{ "name": "memory", "capChars": 2200, "autoApply": "add" }],
+    "sessions": [
+      {
+        "key": "past",
+        "messages": [
+          { "role": "user", "text": "Where do the project notes live?" },
+          { "role": "tool_result", "text": "The project notes live in the docs folder." },
+          { "role": "assistant", "text": "In the docs folder." }
+        ]
+      }
+    ]
+  },
+  "run": { "type": "review", "session": "past" },
+  "steps": [
+    {
+      "toolUse": [
+        {
+          "name": "memory",
+          "input": {
+            "store": "memory",
+            "ops": [{ "op": "add", "text": "Project notes live in the docs folder." }],
+            "evidence": [{ "messageId": "{{msg:past:1}}", "quote": "The project notes live in the docs folder." }],
+            "rationale": "Where to look next time."
+          }
+        }
+      ]
+    },
+    { "text": "Done." }
+  ],
+  "expect": {
+    "end": "end_turn",
+    "proposals": { "count": 1, "kinds": ["memory"], "statuses": ["pending"], "createdBy": ["review"] },
+    "review": { "refused": 0, "applied": 0 },
+    "stores": { "memory": { "unchanged": true } },
+    "costRecorded": true
+  }
+}

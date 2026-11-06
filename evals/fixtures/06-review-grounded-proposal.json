@@ -1,0 +1,41 @@
+{
+  "name": "review-grounded-proposal",
+  "about": "The post-session review cites the user's exact words: a pending proposal by \"review\" on the background model; the store is unchanged.",
+  "seed": {
+    "stores": [{ "name": "user", "capChars": 1375, "autoApply": "none" }],
+    "sessions": [
+      {
+        "key": "past",
+        "messages": [
+          { "role": "user", "text": "Please convert 5 miles. I always want metric units in answers." },
+          { "role": "assistant", "text": "5 miles is about 8 kilometres." }
+        ]
+      }
+    ]
+  },
+  "run": { "type": "review", "session": "past" },
+  "steps": [
+    {
+      "toolUse": [
+        {
+          "name": "memory",
+          "input": {
+            "store": "user",
+            "ops": [{ "op": "add", "text": "User wants metric units in answers." }],
+            "evidence": [{ "messageId": "{{msg:past:0}}", "quote": "I always want metric units in answers." }],
+            "rationale": "A stated, lasting preference."
+          }
+        }
+      ]
+    },
+    { "text": "Nothing else to save." }
+  ],
+  "expect": {
+    "end": "end_turn",
+    "models": ["claude-haiku-5-5", "claude-haiku-5-5"],
+    "proposals": { "count": 1, "kinds": ["memory"], "statuses": ["pending"], "createdBy": ["review"] },
+    "review": { "refused": 0, "applied": 0 },
+    "stores": { "user": { "unchanged": true } },
+    "costRecorded": true
+  }
+}

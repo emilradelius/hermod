@@ -1,0 +1,18 @@
+{
+  "name": "rate-limit-retry",
+  "about": "A 429 (RateLimitError) and a 529 (overloaded) are retried with backoff, then the call succeeds; only the successful call is billed.",
+  "run": { "type": "chat", "userMessage": "Hello?" },
+  "steps": [
+    { "error": { "status": 429, "message": "Rate limited.", "retryAfterSeconds": 0 } },
+    { "error": { "status": 529, "message": "Overloaded." } },
+    { "text": "Hello. What can I do?" }
+  ],
+  "expect": {
+    "end": "end_turn",
+    "text": "Hello. What can I do?",
+    "modelCalls": 3,
+    "errors": ["rate_limit", "overloaded"],
+    "costRecorded": true,
+    "costRows": 1
+  }
+}
