@@ -19,7 +19,7 @@
  */
 import type { Usage } from "../types.js";
 import { show } from "./internal.js";
-import { pricingFor, type ModelPricing, type TokenRates } from "./models.js";
+import { PRICING, pricingFor, type ModelPricing, type TokenRates } from "./models.js";
 
 /** The usage fields costOf reads. A full SDK `BetaUsage` fits. */
 export type CostUsage = Pick<Usage, "input_tokens" | "output_tokens"> &
@@ -66,7 +66,8 @@ export function costOf(model: string, usage: CostUsage, options: CostOptions = {
 /**
  * The most one call can cost, for a budget check before sending it: the whole prompt written to the cache (a cold
  * cache, 5-minute TTL as AnthropicModelClient sends) and every one of `maxOutputTokens` generated. One attempt only:
- * a refusal fallback hop is billed on top. Throws for an unknown model, so it fails before any money is spent.
+ * a refusal fallback hop is billed on top (estimateBudgetCost with `fallbackHop` covers it). The tier follows
+ * `promptTokens` as given. Throws for an unknown model, so it fails before any money is spent.
  */
 export function estimateMaxCost(
   model: string,
@@ -83,6 +84,54 @@ export function estimateMaxCost(
     output: tokenCount(maxOutputTokens, "maxOutputTokens"),
   };
   return priceCounts(pricing, counts, commonFactor(options, options.batch ?? false)) / PICO_PER_USD;
+}
+
+export interface BudgetCostOptions extends CostOptions {
+  /**
+   * The prompt size that picks Haiku 5.5's long-prompt tier, when it is larger than `promptTokens`. Pass an upper
+   * bound of the real prompt (an estimate can be low): the tier applies when this one is over the threshold. A value
+   * that is not a number of 0 or more counts as unbounded (the long tier).
+   */
+  tierPromptTokens?: number;
+  /**
+   * The request carries the server-side refusal fallback (`fallbacks: "default"`): a refused attempt can be followed
+   * by one more at a fallback model, billed on top. The worst case then adds a second attempt (the whole prompt as a
+   * cache write plus every output token) at the highest rates of any priced model, so it covers whichever fallback
+   * target the API picks.
+   */
+  fallbackHop?: boolean;
+}
+
+/**
+ * The worst case of one call for a budget clamp: estimateMaxCost, plus the long-prompt tier whenever
+ * `tierPromptTokens` could pass its threshold, plus a refusal fallback hop when `fallbackHop` is set. Linear in
+ * `maxOutputTokens` for a fixed prompt. Throws for an unknown model.
+ */
+export function estimateBudgetCost(
+  model: string,
+  promptTokens: number,
+  maxOutputTokens: number,
+  options: BudgetCostOptions = {},
+): number {
+  const pricing = requirePricing(model);
+  const prompt = tokenCount(promptTokens, "promptTokens");
+  const output = tokenCount(maxOutputTokens, "maxOutputTokens");
+  const asked = options.tierPromptTokens;
+  const tier = asked === undefined ? prompt : typeof asked === "number" && asked >= 0 ? Math.max(prompt, asked) : Infinity;
+  const factor = commonFactor(options, options.batch ?? false);
+  const rates = ratesFor(pricing, tier);
+  let pico = prompt * picoPerToken(rates.cacheWrite5m, factor) + output * picoPerToken(rates.output, factor);
+  if (options.fallbackHop === true) {
+    let write = 0;
+    let out = 0;
+    for (const entry of Object.values(PRICING)) {
+      const hop = ratesFor(entry, tier);
+      write = Math.max(write, picoPerToken(hop.cacheWrite5m, factor));
+      out = Math.max(out, picoPerToken(hop.output, factor));
+    }
+    pico += prompt * write + output * out;
+  }
+  return pico / PICO_PER_USD;
 }
 
 export interface CostTrackerOptions extends CostOptions {

@@ -15,6 +15,10 @@
  *   list of tainted session ids (for a session id without a row). So tools built one at a time with
  *   `toBetaZodTool` share the taint of their session, and taint lasts across runs, as in runAgent. A session whose
  *   taint cannot be read counts as tainted (fail closed).
+ * - The agent's mode is the STORED one: before every call the adapter reads the agent row (storage.agents.get), and
+ *   the stored mode wins over ctx.mode, as in runAgent. Off set in storage denies every call (read-only ones too),
+ *   shadow or supervised set there apply at once, and an agent with no row, or a row that cannot be read, counts as
+ *   off (fail closed). The round re-reads the mode before its decisions too (ToolEnv.currentMode).
  * A denied, invalid or failed call is thrown as the SDK's ToolError, so the runner sends it with is_error: true.
  * Note the SDK runner runs a turn's calls concurrently; for ordered side effects use runAgent instead.
  */
@@ -25,7 +29,7 @@ import { isSessionTainted, markSessionTainted } from "../loop/taint.js";
 import { runToolRound, type ToolEnv } from "../loop/tools.js";
 import { createApprovalPolicy } from "../safety/approvals.js";
 import { secretsRedactor } from "../safety/redact.js";
-import type { ApprovalPolicy, Id, Redactor, Storage, ToolContext, ToolDef } from "../types.js";
+import type { AgentMode, ApprovalPolicy, Id, Redactor, Storage, ToolContext, ToolDef } from "../types.js";
 import { ToolRegistry } from "./registry.js";
 
 export interface RunnerAdapterOptions {
@@ -61,6 +65,15 @@ function rememberTainted(storage: Storage, sessionId: Id): void {
   set.add(sessionId);
 }
 
+/** The agent's stored mode; null when the row is gone or cannot be read (the caller treats that as off). */
+async function storedMode(storage: Storage, agentId: Id): Promise<AgentMode | null> {
+  try {
+    return (await storage.agents.get(agentId))?.mode ?? null;
+  } catch {
+    return null;
+  }
+}
+
 /** The session's stored taint (row flag or an untrusted wrapper in its messages); true when it cannot be read. */
 async function storedTaint(storage: Storage, sessionId: Id): Promise<boolean> {
   if (seenTainted(storage, sessionId)) return true;
@@ -93,11 +106,13 @@ export function toBetaZodTool(
     async run(input, runContext) {
       const ctx = await ctxFactory();
       const sessionTainted = await storedTaint(ctx.storage, ctx.sessionId);
+      // The stored mode wins over ctx.mode; no readable agent row counts as off, so the policy denies the call.
+      const mode = (await storedMode(ctx.storage, ctx.agentId)) ?? "off";
       let record: Promise<unknown> | null = null;
       const env: ToolEnv = {
         agentId: ctx.agentId,
         sessionId: ctx.sessionId,
-        mode: ctx.mode,
+        mode,
         attended: ctx.attended,
         storage: ctx.storage,
         now: ctx.now,
@@ -113,6 +128,8 @@ export function toBetaZodTool(
           record ??= markSessionTainted(ctx.storage, ctx.sessionId, ctx.now()).catch(() => false);
         },
         actor: `agent:${ctx.agentId}`,
+        // Re-read before the round's decisions: off (or a missing agent) denies, shadow applies at once.
+        currentMode: () => storedMode(ctx.storage, ctx.agentId),
       };
       const signal = runContext?.signal ?? ctx.signal;
       if (signal) env.signal = signal;

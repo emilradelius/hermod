@@ -45,6 +45,36 @@ export function estimateTokens(value: unknown): number {
   }
 }
 
+/**
+ * A conservative token count of a JSON-serialisable value, for budgets: ASCII characters count a quarter token each
+ * (as estimateTokens), every other character half a token per UTF-8 byte, so at least one token per non-ASCII code
+ * point (CJK text is about one token per character, not one per four). An unserialisable value counts as Infinity
+ * (the budget then refuses the call: fail closed).
+ */
+export function estimatePromptTokens(value: unknown): number {
+  let text: string;
+  try {
+    text = JSON.stringify(value) ?? "";
+  } catch {
+    return Infinity;
+  }
+  let ascii = 0;
+  let otherBytes = 0;
+  for (let i = 0; i < text.length; i += 1) {
+    const code = text.charCodeAt(i);
+    if (code < 0x80) ascii += 1;
+    else if (code < 0x800) otherBytes += 2;
+    else if (code >= 0xd800 && code <= 0xdbff && i + 1 < text.length) {
+      const next = text.charCodeAt(i + 1);
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        otherBytes += 4;
+        i += 1;
+      } else otherBytes += 3;
+    } else otherBytes += 3;
+  }
+  return Math.ceil(ascii / 4 + otherBytes / 2);
+}
+
 type Block = Anthropic.Beta.BetaContentBlockParam;
 
 /** The content blocks of a user or assistant message (a mid-conversation system message has none here). */

@@ -11,10 +11,11 @@
  * - Every write must cite { messageId, quote } from the REVIEWED conversation; verifyEvidence checks each quote
  *   (requireGrounding), and anything that does not hold up is refused with the reason, which the reviewer sees.
  * - Direct writes: only an add-only batch to a store whose owner allows add-only writes (autoApply "add"), and only
- *   when the reviewed session is an attended chat, every quote comes from a genuine user message's own words (not
- *   a tool result, not the assistant, not the app's context prefix up to its last closing tag, not the summary a
- *   compression stored as a user message), the reviewed session is not tainted (no
- *   meta.tainted, no untrusted wrapper in any of its messages) and this review has not called session_search. The
+ *   when the reviewed session is an attended chat that no run continued unattended (meta.unattendedRun, set by the
+ *   loop and read fresh; a continued unattended run's user message is the app's text), every quote comes from a
+ *   genuine user message's own words (not a tool result, not the assistant, not the app's context prefix up to its
+ *   last closing tag, not the summary a compression stored as a user message), the reviewed session is not tainted
+ *   (no meta.tainted, no untrusted wrapper in any of its messages) and this review has not called session_search. The
  *   entry text is not bound to the quote, so text injected into the reviewed conversation or into another session
  *   the search returned could otherwise save itself while citing a harmless user quote. Patches and removals,
  *   shadow-mode agents, jobs, delegates and facts grounded in tool output always become proposals.
@@ -24,7 +25,7 @@ import { z } from "zod";
 import { runAgentWith, type LoopDeps } from "../loop/agent.js";
 import { COMPRESSION_MARKER } from "../loop/compress.js";
 import { unattendedPolicy } from "../loop/job-runner.js";
-import { isSessionTainted } from "../loop/taint.js";
+import { UNATTENDED_AT_META_KEY, UNATTENDED_META_KEY, isSessionTainted } from "../loop/taint.js";
 import { knowledgeDeps } from "../memory/knowledge-deps.js";
 import type { MemoryService } from "../memory/memory.js";
 import { DEFAULTS } from "../model/models.js";
@@ -301,9 +302,27 @@ function ownWords(message: MessageRecord): string {
   return normalizeWhitespace(text);
 }
 
-/** Only a person typed the user messages of an attended chat (a job's prompt carries pre-step output; a delegate's task is model text). */
+/**
+ * Some run of the session was unattended: the loop sets meta.unattendedRun (and meta.unattendedRunAt) once and never
+ * clears it, a continued attended chat included. Fail safe: any value but absent / null / false, or a recorded time,
+ * counts.
+ */
+function hadUnattendedRun(session: SessionRecord): boolean {
+  const meta: unknown = session.meta;
+  if (meta === null || meta === undefined) return false;
+  if (typeof meta !== "object") return true;
+  const flag = (meta as Record<string, unknown>)[UNATTENDED_META_KEY];
+  const at = (meta as Record<string, unknown>)[UNATTENDED_AT_META_KEY];
+  return (flag !== undefined && flag !== null && flag !== false) || (at !== undefined && at !== null);
+}
+
+/**
+ * Only a person typed the user messages of an attended chat that was never continued unattended (a job's prompt
+ * carries pre-step output; a delegate's task is model text; a continued run with attended: false carries the app's
+ * text, and the row keeps attended: true, so the loop's meta.unattendedRun decides).
+ */
 function personWroteUserMessages(session: SessionRecord): boolean {
-  return session.kind === "chat" && session.attended;
+  return session.kind === "chat" && session.attended === true && !hadUnattendedRun(session);
 }
 
 function hasToolResult(message: MessageRecord): boolean {
@@ -328,6 +347,9 @@ async function groundIn(
   const problems: string[] = [];
   let allFromUser = true;
   const afterMarker = idsAfterCompressionMarker(await storage.messages.list(reviewed.id));
+  // Read fresh as well: the session may have been continued unattended since the review started. Both must agree.
+  const current = await storage.sessions.get(reviewed.id);
+  const byPerson = personWroteUserMessages(reviewed) && current !== null && personWroteUserMessages(current);
   for (const [index, item] of items.entries()) {
     const message = await storage.messages.get(item.messageId);
     if (!message || message.sessionId !== reviewed.id) {
@@ -336,7 +358,7 @@ async function groundIn(
       );
       continue;
     }
-    if (!personWroteUserMessages(reviewed) || !isGenuineUserMessage(message, afterMarker) || !ownWords(message).includes(normalizeWhitespace(item.quote))) {
+    if (!byPerson || !isGenuineUserMessage(message, afterMarker) || !ownWords(message).includes(normalizeWhitespace(item.quote))) {
       allFromUser = false;
     }
     evidence.push({ kind: hasToolResult(message) ? "tool_result" : "message", ref: message.id, quote: item.quote });

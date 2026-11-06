@@ -8,15 +8,18 @@
  *   allow → run; propose → an action proposal (a draft for a person; nothing runs); deny → is_error with the reason
  *   and an audit entry. The hard denylist is part of the policy and applies in every mode.
  * - Consecutive allowed read-only calls run in parallel; everything else runs one at a time, decided at its turn
- *   (so a side effect is decided after every earlier result, untrusted ones included, has arrived). Before each of
- *   those decisions the agent's mode is re-read (ToolEnv.currentMode): off set during the round denies the call
- *   ("the agent was turned off during the run"), shadow or supervised set during the round applies to it at once.
+ *   (so a side effect is decided after every earlier result, untrusted ones included, has arrived). Before each
+ *   parallel group and each single call the agent's mode is re-read (ToolEnv.currentMode): off set during the round
+ *   (or a missing agent row) denies that group or call and every later one of the round ("the agent was turned off
+ *   during the run"); shadow or supervised set during the round applies at once.
  * - Results keep the tool_use order. A thrown error becomes is_error with `{"error":{"type","message"}}`.
  * - Output: JSON-stringified (strings as they are), redacted, then truncated (redacting first, so a cut never leaves
  *   half a secret the redactor no longer recognises), then wrapped with wrapUntrusted for a tool with
  *   untrustedOutput — which also taints the run. Stricter default: a tool whose capabilities reach outside the app
  *   (OUTSIDE_CAPABILITIES: "external.write", "messaging") counts as untrustedOutput unless it sets
  *   untrustedOutput: false explicitly, for its output and its error text alike (a webhook's reply is remote text).
+ *   An output that cannot be serialised (a toJSON that throws) gives an output_error whose text is redacted, cut and
+ *   wrapped the same way.
  */
 import { createNonce, wrapUntrusted } from "../safety/untrusted.js";
 import type {
@@ -73,8 +76,9 @@ export interface ToolEnv {
   /** For delegation tools: the function that runs a child agent. */
   runChildFor?(tool: ToolDef): ToolContext["runChild"] | undefined;
   /**
-   * The agent's mode as stored now (null when the agent row is gone). When set, it is read before every
-   * side-effecting (not parallel-safe) call and used for that call's decision and tool context.
+   * The agent's mode as stored now (null when the agent row is gone). When set, it is read before every group of
+   * parallel read-only calls and before every other call, and used for their decisions and tool context. Off or a
+   * missing agent denies that call or group and every later valid call of the round (TURNED_OFF_REASON).
    */
   currentMode?(): Promise<AgentMode | null>;
 }
@@ -108,8 +112,28 @@ export async function runToolRound(
   const env: ToolEnv = { ...callerEnv };
   const prepared = blocks.map((block) => prepare(block, registry));
   const outcomes: ToolOutcome[] = new Array<ToolOutcome>(prepared.length);
+  // Once the agent is seen off (or gone) during the round, every later valid call is denied.
+  let turnedOffSeen = false;
   let i = 0;
   while (i < prepared.length) {
+    const next = prepared[i] as Prepared;
+    // The mode is re-read before every group or single call: off set earlier in the round (by a tool, a person
+    // or another process) denies a parallel read as well as a side effect.
+    if (next.kind === "ready" && env.currentMode && !env.signal?.aborted && !turnedOffSeen) {
+      let fresh: AgentMode | null;
+      try {
+        fresh = await env.currentMode();
+      } catch {
+        fresh = null;
+      }
+      if (fresh === null || fresh === "off") turnedOffSeen = true;
+      else env.mode = fresh;
+    }
+    if (turnedOffSeen && next.kind === "ready") {
+      outcomes[i] = await turnedOff(next, env);
+      i += 1;
+      continue;
+    }
     const group: number[] = [];
     while (i + group.length < prepared.length) {
       const item = prepared[i + group.length] as Prepared;
@@ -121,22 +145,7 @@ export async function runToolRound(
       done.forEach((outcome, k) => (outcomes[group[k] as number] = outcome));
       i += group.length;
     } else {
-      const item = prepared[i] as Prepared;
-      if (item.kind === "ready" && env.currentMode && !env.signal?.aborted) {
-        let fresh: AgentMode | null;
-        try {
-          fresh = await env.currentMode();
-        } catch {
-          fresh = null;
-        }
-        if (fresh === null || fresh === "off") {
-          outcomes[i] = await turnedOff(item, env);
-          i += 1;
-          continue;
-        }
-        env.mode = fresh;
-      }
-      outcomes[i] = await handle(item, env);
+      outcomes[i] = await handle(next, env);
       i += 1;
     }
   }
@@ -268,7 +277,16 @@ async function run(item: Extract<Prepared, { kind: "ready" }>, env: ToolEnv, sta
   try {
     content = formatOutput(output, tool, env);
   } catch (error) {
-    content = JSON.stringify({ error: { type: "output_error", message: `The tool's output could not be serialised: ${messageOf(error)}` } });
+    // The error text can carry remote text (a toJSON that throws): redacted, cut and, for an untrusted tool,
+    // wrapped (which taints the run), like a thrown error. A redactor that fails here leaves the text out.
+    let detail: string;
+    try {
+      detail = truncate(env.redactor(messageOf(error)), MAX_ERROR_MESSAGE_CHARS);
+    } catch {
+      detail = "(the error text could not be shown)";
+    }
+    const body = JSON.stringify({ error: { type: "output_error", message: `The tool's output could not be serialised: ${detail}` } });
+    content = hasUntrustedOutput(tool) ? wrap(body, tool, env) : body;
     return {
       result: { type: "tool_result", tool_use_id: block.id, is_error: true, content },
       record: { id: block.id, name: tool.name, decision: "allow", ok: false, error: "output could not be serialised", durationMs: Date.now() - started },

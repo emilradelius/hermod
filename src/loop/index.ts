@@ -14,7 +14,17 @@ export {
   runAgent,
 } from "./agent.js";
 export type { LoopDeps } from "./agent.js";
-export { DEFAULT_MAX_COST_USD, DEFAULT_MAX_ITERATIONS, MIN_USEFUL_OUTPUT_TOKENS, clampMaxTokens, startOfMonthUtc } from "./budget.js";
+export {
+  DEFAULT_MAX_COST_USD,
+  DEFAULT_MAX_ITERATIONS,
+  LONG_PROMPT_MARGIN,
+  MIN_USEFUL_OUTPUT_TOKENS,
+  clampMaxTokens,
+  promptSize,
+  reservedUsd,
+  startOfMonthUtc,
+} from "./budget.js";
+export type { PromptSize } from "./budget.js";
 export {
   COMPRESSION_MARKER,
   REFERENCE_ONLY,
@@ -22,6 +32,7 @@ export {
   SUMMARY_SYSTEM,
   buildSummaryRequest,
   compressConversation,
+  estimatePromptTokens,
   estimateTokens,
   hasPendingToolUse,
   renderTranscript,
@@ -45,10 +56,13 @@ export type { KnowledgeSource } from "./knowledge.js";
 export {
   TAINTED_AT_META_KEY,
   TAINTED_META_KEY,
+  UNATTENDED_AT_META_KEY,
+  UNATTENDED_META_KEY,
   containsUntrustedWrapper,
   isSessionTainted,
   markSessionTainted,
   sessionMarkedTainted,
+  sessionMarkedUnattended,
 } from "./taint.js";
 export {
   OUTSIDE_CAPABILITIES,

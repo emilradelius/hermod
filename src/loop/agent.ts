@@ -4,8 +4,9 @@
  * Phases: prepare → request → tools → (compress) → request → … → finish, all on ONE LoopState object.
  *
  * - prepare: the agent row must exist (a programmer error otherwise) and must not be "off" (AgentOffError, before
- *   any storage write or model call). A new session stores the memory snapshot and the skills index FROZEN on its
- *   row; a continued session reuses what is stored and never asks again. System prompt: [stable rules + untrusted
+ *   any storage write or model call). An unattended run (a new session or a continued one) records
+ *   meta.unattendedRun on the session row once; it is never cleared. A new session stores the memory snapshot and
+ *   the skills index FROZEN on its row; a continued session reuses what is stored and never asks again. System prompt: [stable rules + untrusted
  *   rules + the agent's own prompt] [snapshot + index (+ attached skill bodies)], both stable for the session. The
  *   volatile context goes into the user message, in a <context> block. Everything new is redacted.
  *   Stricter default: RunInput.context is treated as outside text unless the app sets contextTrusted: true. It is
@@ -14,15 +15,20 @@
  * - request: budgets are checked before every call (model calls, USD: the run's cap and the agent's monthly cap,
  *   wall clock). Before every attempt (retries, after a fallback-model switch, the compression summary) the month's
  *   spend is re-read and max_tokens is clamped so the call's worst-case cost fits under what is left (./budget.ts);
- *   a call that would be left with too few tokens is not made and the run ends with "budget_cost". Errors go through classifyError: retry with backoff (deps.sleep) up to 3 times, then the fallback
- *   model if one is configured (one switch, then up to 3 more retries), compress then retry once for a context
- *   overflow, abort otherwise. A model or tool error ends the run with a reason; runAgent never throws for one.
+ *   a call that would be left with too few tokens is not made and the run ends with "budget_cost". The prompt size
+ *   is conservative (non-ASCII text, the last real prompt size, the long-prompt tier when it could apply), a request
+ *   with the server-side refusal fallback keeps it only when two full attempts fit, and each call reserves its worst
+ *   case against the monthly cap while it is in flight (per process). Errors go through classifyError: retry with
+ *   backoff (deps.sleep) up to 3 times, then the fallback model if one is configured (one switch, then up to 3
+ *   more retries), compress then retry once for a context overflow, abort otherwise. A model or tool error ends the
+ *   run with a reason; runAgent never throws for one.
  * - stop reasons: refusal → end "refusal" (no tools run, partial output discarded); pause_turn → append and send
  *   again; max_tokens with a tool_use → no tool runs, end "max_tokens"; end_turn → done. Assistant content is
  *   appended verbatim (thinking included), except the documented fallback echo rules (SDK facts §2.6).
  * - tools: see ./tools.ts (approval policy, proposals, parallel read-only calls, one user message of results). The
- *   agent's mode is re-read from storage before every side-effecting call: one turned off during the round denies
- *   the rest, one set to shadow drafts them.
+ *   agent's mode is re-read from storage before every call and every parallel group: one turned off during the
+ *   round denies the rest, one set to shadow drafts them. A delegate's untrusted result is cut to fit
+ *   maxToolOutputChars before it is wrapped.
  * - compress: see ./compress.ts (summary on the background model, restart from the summary, never edit a turn).
  * - taint (./taint.ts): belongs to the conversation the model sees, so it lasts for the rest of the SESSION. A run
  *   starts tainted when its parent is (inheritTainted), when the session row says so (meta.tainted), when any stored
@@ -37,7 +43,8 @@
 import { randomUUID } from "node:crypto";
 import type Anthropic from "@anthropic-ai/sdk";
 import { backoff, classifyError } from "../model/errors.js";
-import { DEFAULTS, contextWindow, isEffort, pricingFor } from "../model/models.js";
+import { estimateBudgetCost } from "../model/cost.js";
+import { DEFAULTS, contextWindow, isEffort, pricingFor, supportsServerFallback } from "../model/models.js";
 import { createApprovalPolicy } from "../safety/approvals.js";
 import { secretsRedactor } from "../safety/redact.js";
 import { createNonce, UNTRUSTED_RULES, wrapUntrusted } from "../safety/untrusted.js";
@@ -71,11 +78,31 @@ import {
   type ToolParam,
   type ToolResultBlockParam,
 } from "../types.js";
-import { availableUsd, budgetStop, clampMaxTokens, createBudget, wallClockUsed, type Budget } from "./budget.js";
-import { COMPRESSION_MARKER, compressConversation, estimateTokens, hasPendingToolUse } from "./compress.js";
-import { DELEGATE_EXCLUDED_CAPABILITIES, DELEGATE_RESULT_CHARS, delegateSettingsOf } from "./delegate.js";
+import {
+  availableAfterRead,
+  availableUsd,
+  budgetStop,
+  clampMaxTokens,
+  createBudget,
+  promptSize,
+  readMonthSpend,
+  reserveUsd,
+  wallClockUsed,
+  type Budget,
+  type PromptSize,
+} from "./budget.js";
+import { COMPRESSION_MARKER, compressConversation, estimatePromptTokens, estimateTokens, hasPendingToolUse } from "./compress.js";
+import { DELEGATE_EXCLUDED_CAPABILITIES, DELEGATE_RESULT_CHARS, DELEGATE_WRAPPER_ROOM, delegateSettingsOf } from "./delegate.js";
 import { storageKnowledge, type KnowledgeSource } from "./knowledge.js";
-import { containsUntrustedWrapper, isSessionTainted, markSessionTainted, sessionMarkedTainted } from "./taint.js";
+import {
+  UNATTENDED_AT_META_KEY,
+  UNATTENDED_META_KEY,
+  containsUntrustedWrapper,
+  isSessionTainted,
+  markSessionTainted,
+  sessionMarkedTainted,
+  sessionMarkedUnattended,
+} from "./taint.js";
 import { messageOf, runToolRound, truncate, type ToolEnv, type ToolUseLike } from "./tools.js";
 
 export const MAX_RETRIES = 3;
@@ -127,6 +154,12 @@ interface InternalState extends LoopState {
 }
 
 type CallOutcome = { kind: "ok"; message: Message } | { kind: "compress" } | { kind: "failed"; end: RunEnd };
+
+/** A request fitted to the budget, and the release of the worst case reserved for it. */
+interface Fitted {
+  request: ModelRequest;
+  release: () => void;
+}
 
 interface Settings {
   model: string;
@@ -238,6 +271,14 @@ export async function runAgentWith(
     }
   };
 
+  // The reservation of the model call in flight (released once its cost is recorded, or when it failed).
+  let releaseReservation: () => void = () => {};
+  const release = (): void => {
+    const done = releaseReservation;
+    releaseReservation = () => {};
+    done();
+  };
+
   try {
     if (input.sessionId !== undefined) {
       for (const proposal of await storage.proposals.list({ sessionId: state.sessionId })) knownProposals.add(proposal.id);
@@ -271,20 +312,49 @@ export async function runAgentWith(
     }
 
     // ── helpers that use the state ──────────────────────────────────────────────────────────────────────────
-    const promptEstimate = (): number => estimateTokens({ system, tools, messages: state.messages });
+    // The last main prompt's real size (usage), for the conversation `messages` with its first `count` messages.
+    let promptBase: { messages: MessageParam[]; count: number; tokens: number } | null = null;
+    /** The conservative size of a main request over `messages` (state.messages or a copy of it). */
+    const mainPromptSize = (messages: readonly MessageParam[]): PromptSize => {
+      const estimate = estimatePromptTokens({ system, tools, messages });
+      if (promptBase && promptBase.messages === state.messages && messages.length >= promptBase.count) {
+        return promptSize(estimate, { tokens: promptBase.tokens, addedEstimate: estimatePromptTokens(messages.slice(promptBase.count)) });
+      }
+      return promptSize(estimate);
+    };
+    const promptEstimate = (): PromptSize => mainPromptSize(state.messages);
+    const requestPromptSize = (request: ModelRequest): PromptSize =>
+      promptSize(estimatePromptTokens({ system: request.system, tools: request.tools, messages: request.messages }));
     const spentOutside = (): number => state.delegatedUsd;
+
     // Set when the summary call could not be made within the budget (the run then ends "budget_cost", not "error").
     let summaryBudgetStopped = false;
 
     /**
      * A copy of the request with max_tokens clamped so its worst-case cost fits under what is left of the run's cap
-     * and of the month's cap, re-read now; null when too little is left to make the call.
+     * and of the month's cap (re-read now, minus the agent's open reservations); null when too little is left to
+     * make the call. A request that would carry the server-side refusal fallback keeps it only when two full
+     * attempts fit at the asked max_tokens; otherwise it goes with refusalFallback: false, clamped for one attempt.
      */
-    const fitToBudget = async (built: ModelRequest): Promise<ModelRequest | null> => {
-      const available = await availableUsd(budget, storage, now(), spentOutside());
-      const prompt = estimateTokens({ system: built.system, tools: built.tools, messages: built.messages });
-      const maxTokens = clampMaxTokens(built.model, prompt, built.maxTokens, available);
-      return maxTokens === null ? null : { ...built, maxTokens };
+    const fitToBudget = async (built: ModelRequest, size: PromptSize): Promise<Fitted | null> => {
+      release();
+      const monthSpent = await readMonthSpend(budget, storage, now());
+      // From here to the reservation there is no await: another run of the agent cannot slip in between.
+      const available = availableAfterRead(budget, storage, monthSpent, spentOutside());
+      const tier = { tierPromptTokens: size.tierTokens };
+      const prompt = size.tokens;
+      if (built.refusalFallback !== false && supportsServerFallback(built.model)) {
+        const both = clampMaxTokens(built.model, prompt, built.maxTokens, available, undefined, { ...tier, fallbackHop: true });
+        if (both !== null && both === built.maxTokens) {
+          const worst = estimateBudgetCost(built.model, prompt, both, { ...tier, fallbackHop: true });
+          return { request: { ...built, maxTokens: both }, release: reserveUsd(storage, state.agentId, worst) };
+        }
+      }
+      const one = clampMaxTokens(built.model, prompt, built.maxTokens, available, undefined, tier);
+      if (one === null) return null;
+      const request: ModelRequest = { ...built, maxTokens: one };
+      if (supportsServerFallback(built.model)) request.refusalFallback = false;
+      return { request, release: reserveUsd(storage, state.agentId, estimateBudgetCost(built.model, prompt, one, tier)) };
     };
 
     const buildRequest = (): ModelRequest => {
@@ -306,42 +376,56 @@ export async function runAgentWith(
       try {
         usd = budget.tracker.add(model, message.usage).usd;
       } catch (error) {
+        release();
         state.errors.push({ kind: "unknown", action: "abort", message: `The call's cost could not be computed: ${messageOf(error)}` });
         return false;
       }
       state.costUsd = budget.tracker.totalUsd + state.delegatedUsd;
       const usage = message.usage;
-      await storage.costs.add({
-        at: now().toISOString(),
-        agentId: state.agentId,
-        sessionId: state.sessionId,
-        model,
-        purpose: why,
-        inputTokens: usage.input_tokens,
-        outputTokens: usage.output_tokens,
-        cacheReadTokens: usage.cache_read_input_tokens ?? 0,
-        cacheWriteTokens: usage.cache_creation_input_tokens ?? 0,
-        costUsd: usd,
-      });
+      try {
+        await storage.costs.add({
+          at: now().toISOString(),
+          agentId: state.agentId,
+          sessionId: state.sessionId,
+          model,
+          purpose: why,
+          inputTokens: usage.input_tokens,
+          outputTokens: usage.output_tokens,
+          cacheReadTokens: usage.cache_read_input_tokens ?? 0,
+          cacheWriteTokens: usage.cache_creation_input_tokens ?? 0,
+          costUsd: usd,
+        });
+      } finally {
+        // Recorded (or failed to be): the call's reservation is no longer needed.
+        release();
+      }
       callbacks?.onCost?.({ usd, totalUsd: state.costUsd, model });
       return true;
     };
 
+    /**
+     * One model call with retries. On "ok" the call's reservation is still open: the caller records the cost
+     * (recordCost releases it). On any other outcome nothing is left reserved.
+     */
     const callModel = async (
       build: () => ModelRequest,
-      opts: { allowFallback: boolean; stream?: StreamCallbacks },
+      opts: { allowFallback: boolean; stream?: StreamCallbacks; size: (request: ModelRequest) => PromptSize },
     ): Promise<CallOutcome> => {
       let attempts = 0;
       for (;;) {
         if (input.signal?.aborted) return { kind: "failed", end: "aborted" };
         if (wallClockUsed(budget, now().getTime())) return { kind: "failed", end: "budget_time" };
         // Every attempt is fitted again: a retry, the fallback model (other prices), money spent meanwhile.
-        const request = await fitToBudget(build());
-        if (request === null) return { kind: "failed", end: "budget_cost" };
+        const built = build();
+        const fitted = await fitToBudget(built, opts.size(built));
+        if (fitted === null) return { kind: "failed", end: "budget_cost" };
+        const request = fitted.request;
+        releaseReservation = fitted.release;
         try {
           const message = await client.complete(request, opts.stream);
           return { kind: "ok", message };
         } catch (error) {
+          release();
           const classified: ClassifiedError = classifyError(error, {
             promptTokens: estimateTokens({ system: request.system, tools: request.tools, messages: request.messages }),
             windowTokens: contextWindow(request.model),
@@ -387,12 +471,11 @@ export async function runAgentWith(
         summaryMaxTokens: DEFAULTS.background.maxTokens,
         ...(input.signal ? { signal: input.signal } : {}),
         summarise: async (request) => {
-          const estimate = estimateTokens({ system: request.system, messages: request.messages });
-          if (budgetStopFor(budget, state, request.model, estimate, spentOutside(), now()) === "budget_cost") {
+          if (budgetStopFor(budget, state, request.model, requestPromptSize(request), spentOutside(), now()) === "budget_cost") {
             summaryBudgetStopped = true;
             return null;
           }
-          const outcome = await callModel(() => request, { allowFallback: false });
+          const outcome = await callModel(() => request, { allowFallback: false, size: requestPromptSize });
           if (outcome.kind !== "ok") {
             if (outcome.kind === "failed" && outcome.end === "budget_cost") summaryBudgetStopped = true;
             return null;
@@ -411,6 +494,7 @@ export async function runAgentWith(
       await recordTaint();
       // The next call reports the real prompt size; until then the threshold cannot fire again (no loop).
       state.lastPromptTokens = 0;
+      promptBase = null;
       await append("system", [{ type: "text", text: "The conversation was compressed here; it restarts from the summary below." }], `${COMPRESSION_MARKER} ${now().toISOString()}`);
       for (const [index, message] of result.messages.entries()) {
         await append(message.role === "assistant" ? "assistant" : "user", message.content, index === 0 ? textOfParam(message) : "");
@@ -457,13 +541,17 @@ export async function runAgentWith(
         await collectProposals();
         for (const id of result.proposals) addProposal(id);
         const prefix = result.end === "end_turn" ? "" : `(The sub-agent stopped early: ${result.end}.)\n`;
-        const text = truncate(prefix + (result.text || "(no final text)"), DELEGATE_RESULT_CHARS);
+        // Cut before wrapping, to what fits in the tool output with room for the wrapper (formatOutput cuts at
+        // maxToolOutputChars, and a cut after wrapping would drop the closing tag).
+        const limit = Math.min(DELEGATE_RESULT_CHARS, settings.maxToolOutputChars - DELEGATE_WRAPPER_ROOM);
         if (report.tainted) {
           state.tainted = true;
           await recordTaint();
-          return wrapUntrusted(text, { source: "delegate", nonce: createNonce() });
+          // No room for the wrapper: the child's text is left out (the parent is tainted all the same).
+          if (limit < 1) return "(The sub-agent's report does not fit in maxToolOutputChars, so it is left out.)";
+          return wrapUntrusted(truncate(prefix + (result.text || "(no final text)"), limit), { source: "delegate", nonce: createNonce() });
         }
-        return text;
+        return truncate(prefix + (result.text || "(no final text)"), DELEGATE_RESULT_CHARS);
       };
     };
 
@@ -505,7 +593,7 @@ export async function runAgentWith(
       if (callbacks?.onThinking) stream.onThinking = callbacks.onThinking.bind(callbacks);
       if (callbacks?.onToolUse) stream.onToolUse = callbacks.onToolUse.bind(callbacks);
       if (callbacks?.onMessage) stream.onMessage = callbacks.onMessage.bind(callbacks);
-      const outcome = await callModel(buildRequest, { allowFallback: true, stream });
+      const outcome = await callModel(buildRequest, { allowFallback: true, stream, size: (request) => mainPromptSize(request.messages) });
       if (outcome.kind === "failed") {
         state.end = outcome.end;
         break;
@@ -527,6 +615,10 @@ export async function runAgentWith(
       const usage = message.usage;
       state.lastPromptTokens =
         (usage.input_tokens ?? 0) + (usage.cache_read_input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0);
+      // The real size of the prompt just sent (state.messages as it is now, before the reply is appended).
+      promptBase = Number.isFinite(state.lastPromptTokens) && state.lastPromptTokens > 0
+        ? { messages: state.messages, count: state.messages.length, tokens: state.lastPromptTokens }
+        : null;
 
       const stopReason = message.stop_reason;
       if (stopReason === "refusal") {
@@ -620,6 +712,7 @@ export async function runAgentWith(
       break;
     }
   } catch (error) {
+    release();
     await recordTaint().catch(() => null);
     await storage.sessions
       .update(state.sessionId, { status: "error", endedAt: now().toISOString(), counters: state.counters })
@@ -628,6 +721,7 @@ export async function runAgentWith(
   }
 
   // ── finish ────────────────────────────────────────────────────────────────────────────────────────────────
+  release();
   setPhase("finish");
   const end: RunEnd = state.end ?? "error";
   state.end = end;
@@ -668,7 +762,12 @@ async function openSession(
     const records = await storage.messages.list(existing.id);
     const history = rebuildHistory(records);
     const attended = input.attended ?? existing.attended;
-    const updated = (await storage.sessions.update(existing.id, { status: "running", endedAt: null })) ?? existing;
+    const patch: Partial<Pick<SessionRecord, "status" | "endedAt" | "meta">> = { status: "running", endedAt: null };
+    // An unattended run of the session is recorded on the row once (never cleared), even when the row says attended.
+    if (!attended && !sessionMarkedUnattended(existing)) {
+      patch.meta = { ...existing.meta, [UNATTENDED_META_KEY]: true, [UNATTENDED_AT_META_KEY]: (deps.now ?? (() => new Date()))().toISOString() };
+    }
+    const updated = (await storage.sessions.update(existing.id, patch)) ?? existing;
     // Untrusted text from an earlier run: the flag, or a wrapper in ANY stored message of the session (also before a
     // compression marker: a summary may carry what the page said), the same test as the post-session review.
     const tainted = isSessionTainted(updated, records);
@@ -679,6 +778,10 @@ async function openSession(
   const memorySnapshot = redactor(await knowledge.snapshot(config.agentId, [...settings.memoryStores]));
   const skillsIndex = redactor(await knowledge.skillsIndex(config.agentId));
   const meta: Record<string, unknown> = {};
+  if (!attended) {
+    meta[UNATTENDED_META_KEY] = true;
+    meta[UNATTENDED_AT_META_KEY] = (deps.now ?? (() => new Date()))().toISOString();
+  }
   if (settings.attachSkills.length > 0) {
     meta.attachedSkillNames = [...settings.attachSkills];
     meta.attachedSkills = knowledge.attachSkillBodies
@@ -844,7 +947,7 @@ function budgetStopFor(
   budget: Budget,
   state: { iteration: number },
   model: string,
-  promptTokens: number,
+  promptTokens: PromptSize,
   extraSpentUsd: number,
   now: Date,
 ): RunEnd | null {

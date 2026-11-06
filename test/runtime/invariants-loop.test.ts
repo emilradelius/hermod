@@ -175,3 +175,58 @@ describe("invariant 5 (mid-round): a mode change during a tool round applies to 
     expect(tools.executed).toEqual(["save_note:still autonomous"]);
   });
 });
+
+describe("invariants, third hardening round (R3, R5, R7 loop half)", () => {
+  it("off means off for parallel reads too: off set by an earlier call of the round denies every later read", async () => {
+    const { storage, tools, result } = await round(
+      [
+        { name: "first_write", input: {} },
+        { name: "read_a", input: { id: "1" } },
+        { name: "read_b", input: { id: "2" } },
+      ],
+      (s, executed) => [writeThenSwitch(s, "off", executed)],
+    );
+    expect(result.toolCalls.map((c) => [c.name, c.decision])).toEqual([
+      ["first_write", "allow"],
+      ["read_a", "deny"],
+      ["read_b", "deny"],
+    ]);
+    expect(tools.executed).toEqual(["first_write"]);
+    const reasons = (await storage.audit.list({ action: "tool.deny" })).map((a) => a.details.reason);
+    expect(reasons).toEqual(["the agent was turned off during the run", "the agent was turned off during the run"]);
+  });
+
+  it("an unattended continuation of an attended chat is recorded on the row and never cleared", async () => {
+    const storage = await setup("autonomous");
+    const model = new FakeModelClient([textMessage("Hi."), textMessage("Ok."), textMessage("Ok.")]);
+    const deps = { storage, model, sleep: noSleep };
+    const chat = await runAgent(baseConfig(), { userMessage: "hello" }, deps);
+    expect((await storage.sessions.get(chat.sessionId))?.meta.unattendedRun).toBeUndefined();
+    await runAgent(baseConfig(), { sessionId: chat.sessionId, attended: false, userMessage: "app text" }, deps);
+    await runAgent(baseConfig(), { sessionId: chat.sessionId, attended: true, userMessage: "me again" }, deps);
+    const row = await storage.sessions.get(chat.sessionId);
+    expect(row?.meta.unattendedRun).toBe(true);
+    expect(typeof row?.meta.unattendedRunAt).toBe("string");
+  });
+
+  it("two overlapping runs of one agent never record more than its monthly cap", async () => {
+    const cap = 0.4;
+    const storage = await setup("autonomous", { monthlyCostCapUsd: cap });
+    let arrived = 0;
+    let open: () => void = () => {};
+    const both = new Promise<void>((resolve) => {
+      open = resolve;
+      setTimeout(resolve, 300);
+    });
+    const step = async (request: { maxTokens: number }) => {
+      arrived += 1;
+      if (arrived >= 2) open();
+      await both;
+      return textMessage("ok", { usage: { input: 1, output: request.maxTokens } });
+    };
+    const model = new FakeModelClient([step, step]);
+    const run = () => runAgent(baseConfig(), { userMessage: "go" }, { storage, model, sleep: noSleep });
+    await Promise.all([run(), run()]);
+    expect(await storage.costs.sum({ agentId: AGENT, since: "2000-01-01T00:00:00.000Z" })).toBeLessThanOrEqual(cap);
+  });
+});

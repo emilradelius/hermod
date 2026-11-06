@@ -82,7 +82,11 @@ export interface AgentRecord {
   accuracyBar: number;
   /** Minimum scored drafts before the bar can be met. */
   minSamples: number;
-  /** Hard monthly cost cap in USD across all sessions of this agent; null = no cap. */
+  /**
+   * Hard monthly cost cap in USD across all sessions of this agent; null = no cap. Calls of the agent in flight in
+   * the same process reserve their worst case against it (overlapping runs cannot each spend the whole remainder);
+   * runs in other processes count only once their cost is recorded.
+   */
   monthlyCostCapUsd: number | null;
   createdAt: IsoTime;
   updatedAt: IsoTime;
@@ -591,7 +595,11 @@ export interface AgentConfig {
   budget?: {
     /** Model calls per run. Default 20. */
     maxIterations?: number;
-    /** USD per run. Default 1.00. */
+    /**
+     * USD per run. Default 1.00. Every call's max_tokens is clamped so its worst case fits (a conservative prompt
+     * size, the long-prompt tier when the prompt could pass it, and a second attempt when the request carries the
+     * server-side refusal fallback; without room for two attempts the fallback is turned off for that call).
+     */
     maxCostUsd?: number;
     /** Wall clock per run. Default none. */
     maxWallMs?: number;
@@ -609,7 +617,10 @@ export interface AgentConfig {
   /** Applied to everything that enters the conversation or storage. Default: secrets only. */
   redactor?: Redactor;
   approvals?: ApprovalPolicy;
-  /** Default 20_000 characters. */
+  /**
+   * Default 20_000 characters. A delegate's untrusted result is cut to this minus room for its wrapper before it is
+   * wrapped, so the closing tag stays.
+   */
   maxToolOutputChars?: number;
   /** Memory stores loaded into the frozen snapshot. Default ["memory", "user"]. */
   memoryStores?: string[];
@@ -638,7 +649,11 @@ export interface RunInput {
   /** Continue this session (chat); otherwise a new session is created. */
   sessionId?: Id;
   kind?: SessionKind;
-  /** Default true for chat, false for job. */
+  /**
+   * Default true for chat, false for job; a continued session defaults to its row's value. An unattended run is
+   * recorded on the session row once (meta.unattendedRun, meta.unattendedRunAt) and never cleared, so the review
+   * never counts the user messages of such a session as the person's own words.
+   */
   attended?: boolean;
   parentSessionId?: Id;
   /** The genuine user message for this turn. */

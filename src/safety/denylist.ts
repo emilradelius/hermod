@@ -6,9 +6,14 @@
  * case-insensitive and whitespace-tolerant (runs of whitespace, including escaped newlines and tabs, count as one
  * space). Apps can add patterns; there is deliberately no way to remove or replace a default one.
  *
+ * Exec-style inputs are also read as one command line: each array of strings joined with spaces (an argv such as
+ * ["find", "/", "-delete"]), and each string field of an object followed by each of its string-array fields
+ * ({ command: "rm", args: ["-rf", "/"] } reads as "rm -rf /").
+ *
  * Each string inside the input is also checked in a normalised form (it only adds denials, never removes one):
- * - SQL comments (block comments, and line comments that end before more text) become spaces, so "DROP", an empty
- *   block comment and "TABLE" with no space between them read as "DROP TABLE";
+ * - SQL comments become spaces: block comments, and "--" line comments up to the end of their line or of the text,
+ *   so "DROP", an empty block comment and "TABLE" with no space between them read as "DROP TABLE", and
+ *   "TRUNCATE users -- done" reads as "TRUNCATE users";
  * - shell quoting inside words is undone the way the shell would: empty quote pairs ('' "" and empty backticks)
  *   and backslashes go, closed quote pairs without spaces lose their quotes, and $IFS / ${IFS} become a space, so
  *   "r''m -rf /" and "rm -rf $IFS/" read as "rm -rf /".
@@ -76,10 +81,17 @@ const SCRIPTER = String.raw`(?:python[\d.]*|pypy[\d.]*|perl[\d.]*|ruby[\d.]*|nod
 const RUNS_STDIN = String.raw`(?:${SHELL}|${SCRIPTER}(?:\s+-(?![cemp]\b|-)[a-z]{1,10}){0,5}(?:\s+-)?\s*(?=$|[;&|)"'\x60\\]))`;
 /** One pipe (not "||"). */
 const PIPE = String.raw`(?<!\|)\|(?!\|)`;
-/** Prefixes before the interpreter in a pipe: sudo (with flags), env (with assignments), command, exec. */
-const RUNNER = String.raw`(?:(?:sudo\s+(?:-\S+\s+){0,5}|env\s+(?:\S+=\S*\s+){0,10}|command\s+|exec\s+)(?:\S*\/)?){0,3}(?:\S*\/)?`;
-/** A SQL object name: words joined by dots, optionally quoted (a trailing full stop is not part of it). */
-const SQL_NAME = String.raw`[\w"]{1,200}(?:\.[\w"]{1,200}){0,3}`;
+/**
+ * Prefixes before the interpreter in a pipe, each optionally with a path ("/usr/bin/env"): sudo, doas, env, command,
+ * exec, nohup, nice, time and busybox, with flags (a flag may take one value: "-u root", "-n 10") and env-style
+ * assignments ("VAR=1").
+ */
+const PREFIX = String.raw`(?:\S*\/)?(?:sudo|doas|env|command|exec|nohup|nice|time|busybox)\s+(?:-\S+\s+(?:\w[\w.-]{0,63}\s+)?){0,5}(?:\S+=\S*\s+){0,10}`;
+const RUNNER = String.raw`(?:${PREFIX}){0,4}(?:\S*\/)?`;
+/** One part of a SQL object name: a word, or a quoted name that may hold spaces ("my table", `my table`). */
+const SQL_PART = String.raw`(?:"[^"\n]{1,200}"|\x60[^\x60\n]{1,200}\x60|[\w"]{1,200})`;
+/** A SQL object name: parts joined by dots (a trailing full stop is not part of it). */
+const SQL_NAME = String.raw`${SQL_PART}(?:\.${SQL_PART}){0,3}`;
 const MODE_777 = String.raw`(?<=^|\s)${Q}(?:0?777|a\+rwx|ugo\+rwx)${Q}(?=\s|$)`;
 
 function pattern(id: string, description: string, source: string): DenyPattern {
@@ -127,12 +139,12 @@ export const DEFAULT_DENY_PATTERNS: readonly DenyPattern[] = Object.freeze([
   pattern(
     "truncate-table",
     "TRUNCATE of a table",
-    String.raw`\btruncate\s+table\b|(?<=^\S*\s|[;("'\x60]\s{0,10}|\b(?:do|execute|begin|then)\s{1,10})truncate\s+(?:only\s+)?${SQL_NAME}(?:\s*,\s*${SQL_NAME}){0,20}\s*\*?\s*(?=;|$|["'\x60)\\])|\btruncate\s+(?:only\s+)?[\w."]{1,200}(?:\s*,\s*[\w."]{1,200}){0,20}\s*(?:;|\s(?:cascade|restrict|restart\s+identity|continue\s+identity)\b)`,
+    String.raw`\btruncate\s+table\b|(?<=^\S*\s|[;("'\x60]\s{0,10}|\b(?:do|execute|begin|then)\s{1,10})truncate\s+(?:only\s+)?${SQL_NAME}(?:\s*,\s*${SQL_NAME}){0,20}\s*\*?\s*(?=;|$|["'\x60)\\])|\btruncate\s+(?:only\s+)?${SQL_NAME}(?:\s*,\s*${SQL_NAME}){0,20}\s*(?:;|\s(?:cascade|restrict|restart\s+identity|continue\s+identity)\b)`,
   ),
   pattern(
     "delete-without-where",
     "DELETE FROM a table without a WHERE clause",
-    String.raw`\bdelete\s+from\s+(?:only\s+)?[\w."]{1,200}(?:\s+(?:as\s+)?(?!where\b|using\b|returning\b)[a-z_]\w{0,60})?\s*(?:;|$|\breturning\b)`,
+    String.raw`\bdelete\s+from\s+(?:only\s+)?${SQL_NAME}(?:\s+(?:as\s+)?(?!where\b|using\b|returning\b)[a-z_]\w{0,60})?\s*(?:;|$|\breturning\b)`,
   ),
   pattern(
     "git-force-push-main",
@@ -219,13 +231,46 @@ function stringLeaves(value: unknown, out: string[], depth = 0, seen = new WeakS
   }
 }
 
+/** A non-empty array of strings only (an argv). */
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.length > 0 && value.every((item) => typeof item === "string");
+}
+
+/**
+ * Exec-style inputs read as one command line, depth-limited: each array of strings joined with spaces
+ * (["find", "/", "-delete"]), and for an object with string fields and string-array fields, each string field
+ * followed by each array ({ command: "rm", args: ["-rf", "/"] } reads as "rm -rf /"). Only adds text to check.
+ */
+function commandLines(value: unknown, out: string[], depth = 0, seen = new WeakSet<object>()): void {
+  if (out.length > 2_000 || depth > 32 || value === null || typeof value !== "object") return;
+  if (seen.has(value)) return;
+  seen.add(value);
+  try {
+    if (Array.isArray(value)) {
+      if (isStringArray(value)) out.push(value.join(" "));
+      for (const item of value) commandLines(item, out, depth + 1, seen);
+      return;
+    }
+    const fields = Object.values(value);
+    const words = fields.filter((field): field is string => typeof field === "string").slice(0, 32);
+    const argvs = fields.filter(isStringArray).slice(0, 32);
+    for (const word of words) for (const argv of argvs) out.push(`${word} ${argv.join(" ")}`);
+    for (const field of fields) commandLines(field, out, depth + 1, seen);
+  } catch {
+    // A hostile getter; the JSON text and the string leaves are still checked.
+  }
+}
+
 /** One space for any run of whitespace, including JSON-escaped newlines, tabs and carriage returns. */
 function squash(text: string): string {
   return text.replace(/\\[nrt]/g, " ").replace(/\s+/g, " ").trim();
 }
 
-/** Replaces every span from `open` to the first `close` after it (inclusive) with a space, in one linear pass. */
-function replaceSpans(text: string, open: string, closes: readonly string[]): string {
+/**
+ * Replaces every span from `open` to the first `close` after it (inclusive) with a space, in one linear pass. With
+ * `toEnd`, a span that is never closed runs to the end of the text (a SQL line comment on the last line).
+ */
+function replaceSpans(text: string, open: string, closes: readonly string[], toEnd = false): string {
   let out = "";
   let pos = 0;
   for (;;) {
@@ -240,16 +285,21 @@ function replaceSpans(text: string, open: string, closes: readonly string[]): st
         closeLength = close.length;
       }
     }
-    if (end < 0) break;
+    if (end < 0) {
+      if (!toEnd) break;
+      out += `${text.slice(pos, start)} `;
+      pos = text.length;
+      break;
+    }
     out += `${text.slice(pos, start)} `;
     pos = end + closeLength;
   }
   return pos === 0 ? text : out + text.slice(pos);
 }
 
-/** SQL comments become a space: block comments, and "--" line comments that end before more text (real or JSON \n). */
+/** SQL comments become a space: block comments, and "--" line comments (to the line's end or the text's end). */
 function withoutSqlComments(text: string): string {
-  return replaceSpans(replaceSpans(text, "/*", ["*/"]), "--", ["\n", "\\n"]);
+  return replaceSpans(replaceSpans(text, "/*", ["*/"]), "--", ["\n", "\\n"], true);
 }
 
 /** Shell quoting inside words undone: empty quote pairs, backslashes and quote pairs without spaces go; $IFS is a space. */
@@ -285,6 +335,7 @@ export function createDenylist(options: DenylistOptions = {}): Denylist {
     }
     const leaves: string[] = [];
     stringLeaves(call?.input, leaves);
+    commandLines(call?.input, leaves);
     // The JSON text is matched as it is (its backslashes and quotes are JSON's); each string on its own is also read
     // in its normalised form, the way SQL or the shell would get it.
     const haystacks = [squash(`${tool} ${json}`), ...leaves.flatMap((leaf) => forms(`${tool} ${leaf}`))];

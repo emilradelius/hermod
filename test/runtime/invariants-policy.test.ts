@@ -14,6 +14,10 @@ import { FakeModelClient, textMessage, toolUseMessage } from "../../src/testing/
 import { toBetaZodTool } from "../../src/tools/index.js";
 import { AgentOffError, type ToolDef } from "../../src/types.js";
 import { AGENT, NOW, OWNER, config, entries, run, sideEffect, toolCtx, world } from "./hardening/policy-helpers.js";
+import { runAgent } from "../../src/loop/index.js";
+import { defaultDenylist } from "../../src/safety/index.js";
+import { makeMemoryTool } from "../../src/tools/builtin/index.js";
+import type { MessageRecord, SessionRecord, ToolContext } from "../../src/types.js";
 
 describe("invariant: the agent only proposes (policy hardening)", () => {
   it("a scheduled job's memory add never applies directly, even to an add-only store with trusted pre-step output", async () => {
@@ -143,5 +147,78 @@ describe("invariant: shadow runs no side effects, unattended denies, off means o
     await expect(curate(w.storage, { agentId: AGENT, now: new Date(NOW.getTime() + 60 * 86_400_000) })).rejects.toBeInstanceOf(AgentOffError);
     expect((await w.storage.skills.get(AGENT, "weekly-review"))?.status).toBe("active");
     expect(await w.storage.audit.list({})).toEqual(audit);
+  });
+});
+
+describe("invariant: off, shadow and the person's words hold on every path (policy hardening, round 3)", () => {
+  it("off in storage means off for the SDK Tool Runner adapter: nothing runs, whatever ctx.mode says", async () => {
+    const w = await world({ mode: "off" });
+    const session = await w.storage.sessions.create({ agentId: AGENT, kind: "chat", attended: true, memorySnapshot: "", skillsIndex: "" });
+    const factory = (): ToolContext => toolCtx(w.storage, session.id, { mode: "autonomous" });
+    const read: string[] = [];
+    for (const tool of w.notes.tools) {
+      await expect(toBetaZodTool(tool, factory).run({ id: "1", url: "https://example.test", text: "x" })).rejects.toThrow();
+      read.push(tool.name);
+    }
+    expect(read).toHaveLength(w.notes.tools.length);
+    expect(w.executed).toEqual([]);
+    expect(await w.storage.proposals.list({ agentId: AGENT })).toEqual([]);
+  });
+
+  it("shadow in storage: the adapter's side effects are drafts only, whatever ctx.mode says", async () => {
+    const w = await world({ mode: "shadow" });
+    const session = await w.storage.sessions.create({ agentId: AGENT, kind: "chat", attended: true, memorySnapshot: "", skillsIndex: "" });
+    const save = w.notes.tools.find((t) => t.name === "save_note") as ToolDef;
+    await toBetaZodTool(save, () => toolCtx(w.storage, session.id, { mode: "autonomous" })).run({ text: "x" });
+    expect(w.executed).toEqual([]);
+    expect((await w.storage.proposals.list({ agentId: AGENT })).map((p) => p.shadow)).toEqual([true]);
+  });
+
+  it("an attended chat continued unattended by the app is not the person's words: its review only proposes", async () => {
+    const w = await world();
+    w.model.push(textMessage("Hello."), textMessage("Noted."));
+    const first = await runAgent(config(w), { userMessage: "Hello there." }, w.deps);
+    await runAgent(config(w), { sessionId: first.sessionId, attended: false, userMessage: "I always want metric units in answers." }, w.deps);
+    const session = (await w.storage.sessions.get(first.sessionId)) as SessionRecord;
+    const message = (await w.storage.messages.list(session.id)).find((m) => m.role === "user" && m.text.includes("metric units")) as MessageRecord;
+    const model = new FakeModelClient([
+      toolUseMessage([
+        {
+          name: "memory",
+          input: {
+            store: "user",
+            ops: [{ op: "add", text: "User prefers metric units." }],
+            evidence: [{ messageId: message.id, quote: "I always want metric units" }],
+            rationale: "The user said so.",
+          },
+        },
+      ]),
+      textMessage("Done."),
+    ]);
+    const outcome = await reviewSession(session.id, { storage: w.storage, model, memory: w.memory, skills: w.skills, proposals: w.proposals, now: () => NOW, sleep: async () => {} });
+    expect(outcome.applied).toEqual([]);
+    expect(outcome.proposals).toHaveLength(1);
+    expect(await entries(w, "user")).toEqual([]);
+  });
+
+  it("a knowledge tool whose run was replaced loses its exemption: in shadow mode the replacement never runs", async () => {
+    const w = await world({ mode: "shadow" });
+    const ran: string[] = [];
+    const patched = makeMemoryTool(w.memory) as unknown as ToolDef;
+    patched.run = () => void ran.push("patched");
+    await run(
+      w,
+      [toolUseMessage([{ name: "memory", input: { store: "user", ops: [{ op: "add", text: "x" }] } }]), textMessage("Done.")],
+      {},
+      { toolsets: [{ name: "knowledge", tools: [patched] }, w.notes] },
+    );
+    expect(ran).toEqual([]);
+    expect(await entries(w, "user")).toEqual([]);
+  });
+
+  it("exec-style inputs of the worst commands are on the hard denylist", () => {
+    for (const input of [{ command: "rm", args: ["-rf", "/"] }, { argv: ["find", "/", "-delete"] }]) {
+      expect(defaultDenylist.isDenied({ tool: "exec", input }).denied, JSON.stringify(input)).toBe(true);
+    }
   });
 });
