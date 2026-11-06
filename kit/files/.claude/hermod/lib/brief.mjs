@@ -25,7 +25,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { CONFIG_BOUNDS, CONFIG_FILE, DEFAULTS, loadConfig } from "./config.mjs";
 import { branch as gitBranch, head as gitHead, isGitRepo, recentBranches, uncommittedFiles } from "./git.mjs";
-import { isPlainObject, readJson, readText, safeEnd } from "./io.mjs";
+import { graphemeEnd, isPlainObject, readJson, readText } from "./io.mjs";
 import { lessonsStats, parseLessons } from "./lessons.mjs";
 import { resolveInside, toPosix } from "./paths.mjs";
 import { redact } from "./redact.mjs";
@@ -87,32 +87,8 @@ const KIT_DIR = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 
 // --------------------------------------------------------------------------------------------- cutting
 
-/** @type {Intl.Segmenter | null} */
-const SEGMENTER = typeof Intl === "object" && typeof Intl.Segmenter === "function" ? new Intl.Segmenter("en", { granularity: "grapheme" }) : null;
-
-/**
- * The largest index ≤ i that is a grapheme boundary (falls back to a surrogate-safe index for clusters
- * longer than the search window).
- * @param {string} text
- * @param {number} i
- * @returns {number}
- */
-export function graphemeEnd(text, i) {
-  if (i <= 0) return 0;
-  if (i >= text.length) return text.length;
-  const fallback = safeEnd(text, i);
-  if (!SEGMENTER) return fallback;
-  const start = Math.max(0, i - 64);
-  let best = -1;
-  for (const { index } of SEGMENTER.segment(text.slice(start, Math.min(text.length, i + 64)))) {
-    const b = start + index;
-    if (b > i) break;
-    best = b;
-  }
-  // start is only a real boundary when it is 0; otherwise a boundary found at start is uncertain.
-  if (best < 0 || (best === start && start > 0)) return fallback;
-  return best;
-}
+/** The largest index ≤ i that is a grapheme boundary: the one shared implementation in io.mjs. */
+export { graphemeEnd };
 
 /**
  * Cuts text to at most max characters: at the last line break when that keeps at least 30 % of max, else at

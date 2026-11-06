@@ -6,10 +6,11 @@
 
 const JS = /\.(?:mjs|js)$/;
 const NETWORK = new Set(["node:http", "node:https", "node:http2", "node:net", "node:tls", "node:dgram", "node:dns"]);
-const STATIC = /^\s*(?:import|export)\b[^'"`]*?\bfrom\s*['"]([^'"]+)['"]/;
-const BARE = /^\s*import\s*['"]([^'"]+)['"]/;
+// Matched over the whole text (comment lines blanked), so a statement may span lines: import {\n  a,\n} from "x".
+const STATIC = /(?:^|[;\n])[ \t]*(?:import|export)\b[^;'"`]*?\bfrom\s*['"]([^'"]+)['"]/g;
+const BARE = /(?:^|[;\n])[ \t]*import\s*['"]([^'"]+)['"]/g;
 const DYNAMIC = /\b(?:import|require)\s*\(\s*['"]([^'"]+)['"]\s*\)/g;
-const CALLS = /\b(?:fetch|WebSocket|EventSource)\s*\(/;
+const CALLS = /\b(?:fetch|WebSocket|EventSource)\s*\(/g;
 
 /** @param {string} p */
 const posix = (p) => String(p).replace(/\\/g, "/").replace(/^\.\//, "");
@@ -59,21 +60,22 @@ function codeLines(text) {
 
 /** @param {string} text */
 function findings(text) {
+  // Comment lines become empty lines, so line numbers stay right and statements can still span lines.
+  const lines = text.replace(/\r\n?/g, "\n").split("\n");
+  const kept = new Set(codeLines(text).map(([n]) => n));
+  const code = lines.map((line, i) => (kept.has(i + 1) ? line : "")).join("\n");
+  /** @param {number} index */
+  const lineOf = (index) => code.slice(0, index).split("\n").length;
   /** @type {string[]} */
   const found = [];
-  for (const [n, line] of codeLines(text)) {
-    /** @type {string[]} */
-    const specs = [];
-    const s = STATIC.exec(line) ?? BARE.exec(line);
-    if (s?.[1]) specs.push(s[1]);
-    for (const m of line.matchAll(DYNAMIC)) if (m[1]) specs.push(m[1]);
-    for (const spec of specs) {
-      const why = problem(spec);
-      if (why) found.push(`line ${n} ${why}`);
+  for (const re of [STATIC, BARE, DYNAMIC]) {
+    for (const m of code.matchAll(re)) {
+      const why = m[1] ? problem(m[1]) : null;
+      if (why) found.push(`line ${lineOf((m.index ?? 0) + m[0].length - 1)} ${why}`);
     }
-    if (CALLS.test(line)) found.push(`line ${n} makes a network call`);
   }
-  return found;
+  for (const m of code.matchAll(CALLS)) found.push(`line ${lineOf(m.index ?? 0)} makes a network call`);
+  return [...new Set(found)];
 }
 
 /** @type {import('../../../kit/files/.claude/hermod/lib/checks.mjs').Check} */
@@ -123,6 +125,17 @@ export default {
       ctx: {
         changedFiles: ["kit/files/.claude/hermod/hooks/y.mjs"],
         files: { "kit/files/.claude/hermod/hooks/y.mjs": 'import { z } from "zod";\n' },
+      },
+      expect: false,
+    },
+    {
+      name: "fails on a package import or a networking builtin written over several lines",
+      ctx: {
+        changedFiles: ["kit/files/.claude/hermod/lib/m.mjs", "kit/files/.claude/hermod/lib/d.mjs"],
+        files: {
+          "kit/files/.claude/hermod/lib/m.mjs": 'import {\n  z,\n} from "zod";\n',
+          "kit/files/.claude/hermod/lib/d.mjs": 'const h = await import(\n  "node:https"\n);\n',
+        },
       },
       expect: false,
     },

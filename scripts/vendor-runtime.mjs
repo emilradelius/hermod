@@ -7,7 +7,8 @@
  *
  * Pinned and reviewable, like scripts/sync.mjs:
  * - the ref must be a tag or a full 40-character commit sha (branch names and short shas move);
- * - this checkout must be clean and its HEAD must be exactly that commit, so the build is that commit's code;
+ * - this checkout must be clean and its HEAD must be exactly that commit, so the build is that commit's code (no
+ *   untracked or ignored file under src/ either, since the build compiles everything there);
  * - the target gets dist/, LICENSE, a README and VERSION.json (version, commit, a sha256 per file). Files the previous
  *   stamp listed and the new build no longer has are removed; nothing else in the target is touched.
  * The app commits the result in a pull request a person reviews. The vendored code imports `@anthropic-ai/sdk` and
@@ -94,6 +95,13 @@ function main() {
   // skip-worktree / assume-unchanged entries hide local edits from git status, so refuse them too.
   const hidden = git(["ls-files", "-v"]).out.split("\n").filter((line) => /^[a-zS]/.test(line) && !line.startsWith("H "));
   if (hidden.length) fail(`${hidden.length} tracked file(s) are marked skip-worktree or assume-unchanged; clear them first.`);
+  // npm run build compiles everything under src/ (tsconfig.build.json), tracked or not: an untracked or git-ignored
+  // file there would end up in a build stamped as exactly this commit.
+  const stray = git(["status", "--porcelain", "--untracked-files=all", "--ignored", "--", "src", "tsconfig.json", "tsconfig.build.json"]).out;
+  if (stray) {
+    const paths = stray.split("\n").map((line) => line.slice(3)).slice(0, 5).join(", ");
+    fail(`untracked or ignored files under src/ would be compiled into the build (${paths}); remove them first.`);
+  }
 
   const targetDir = path.resolve(target);
   if (targetDir === REPO || targetDir.startsWith(REPO + path.sep)) fail("the target must be outside the hermod checkout.");
