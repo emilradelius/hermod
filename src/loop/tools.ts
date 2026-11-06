@@ -8,11 +8,15 @@
  *   allow → run; propose → an action proposal (a draft for a person; nothing runs); deny → is_error with the reason
  *   and an audit entry. The hard denylist is part of the policy and applies in every mode.
  * - Consecutive allowed read-only calls run in parallel; everything else runs one at a time, decided at its turn
- *   (so a side effect is decided after every earlier result, untrusted ones included, has arrived).
+ *   (so a side effect is decided after every earlier result, untrusted ones included, has arrived). Before each of
+ *   those decisions the agent's mode is re-read (ToolEnv.currentMode): off set during the round denies the call
+ *   ("the agent was turned off during the run"), shadow or supervised set during the round applies to it at once.
  * - Results keep the tool_use order. A thrown error becomes is_error with `{"error":{"type","message"}}`.
  * - Output: JSON-stringified (strings as they are), redacted, then truncated (redacting first, so a cut never leaves
  *   half a secret the redactor no longer recognises), then wrapped with wrapUntrusted for a tool with
- *   untrustedOutput — which also taints the run.
+ *   untrustedOutput — which also taints the run. Stricter default: a tool whose capabilities reach outside the app
+ *   (OUTSIDE_CAPABILITIES: "external.write", "messaging") counts as untrustedOutput unless it sets
+ *   untrustedOutput: false explicitly, for its output and its error text alike (a webhook's reply is remote text).
  */
 import { createNonce, wrapUntrusted } from "../safety/untrusted.js";
 import type {
@@ -22,6 +26,7 @@ import type {
   Id,
   Redactor,
   Storage,
+  ToolCapability,
   ToolCallRecord,
   ToolContext,
   ToolDef,
@@ -32,6 +37,19 @@ import type { ToolRegistry } from "../tools/registry.js";
 /** Searchable text keeps at most this much of each tool output (rt-spec: 8 KB). */
 export const SEARCH_TEXT_TOOL_OUTPUT_CHARS = 8 * 1024;
 const MAX_ERROR_MESSAGE_CHARS = 2_000;
+
+/** Capabilities that reach outside the app: such a tool's output and errors can carry remote text. */
+export const OUTSIDE_CAPABILITIES: readonly ToolCapability[] = Object.freeze(["external.write", "messaging"]);
+
+/** The tool's output and error text are wrapped as untrusted (and taint the run). */
+export function hasUntrustedOutput(tool: Pick<ToolDef, "capabilities" | "untrustedOutput">): boolean {
+  if (tool.untrustedOutput === true) return true;
+  if (tool.untrustedOutput === false) return false;
+  return Array.isArray(tool.capabilities) && tool.capabilities.some((cap) => OUTSIDE_CAPABILITIES.includes(cap));
+}
+
+/** The denial reason when the agent was turned off while a tool round was going on. */
+export const TURNED_OFF_REASON = "the agent was turned off during the run";
 
 /** What the tool round needs from the run. `isTainted` / `markTainted` read and change the run's one state object. */
 export interface ToolEnv {
@@ -54,6 +72,11 @@ export interface ToolEnv {
   actor: string;
   /** For delegation tools: the function that runs a child agent. */
   runChildFor?(tool: ToolDef): ToolContext["runChild"] | undefined;
+  /**
+   * The agent's mode as stored now (null when the agent row is gone). When set, it is read before every
+   * side-effecting (not parallel-safe) call and used for that call's decision and tool context.
+   */
+  currentMode?(): Promise<AgentMode | null>;
 }
 
 export interface ToolUseLike {
@@ -78,9 +101,11 @@ type Prepared =
 export async function runToolRound(
   blocks: readonly ToolUseLike[],
   registry: ToolRegistry,
-  env: ToolEnv,
+  callerEnv: ToolEnv,
   onToolCall?: (record: ToolCallRecord) => void,
 ): Promise<ToolOutcome[]> {
+  // A copy, so a mode re-read during the round never changes the caller's object.
+  const env: ToolEnv = { ...callerEnv };
   const prepared = blocks.map((block) => prepare(block, registry));
   const outcomes: ToolOutcome[] = new Array<ToolOutcome>(prepared.length);
   let i = 0;
@@ -96,7 +121,22 @@ export async function runToolRound(
       done.forEach((outcome, k) => (outcomes[group[k] as number] = outcome));
       i += group.length;
     } else {
-      outcomes[i] = await handle(prepared[i] as Prepared, env);
+      const item = prepared[i] as Prepared;
+      if (item.kind === "ready" && env.currentMode && !env.signal?.aborted) {
+        let fresh: AgentMode | null;
+        try {
+          fresh = await env.currentMode();
+        } catch {
+          fresh = null;
+        }
+        if (fresh === null || fresh === "off") {
+          outcomes[i] = await turnedOff(item, env);
+          i += 1;
+          continue;
+        }
+        env.mode = fresh;
+      }
+      outcomes[i] = await handle(item, env);
       i += 1;
     }
   }
@@ -160,6 +200,12 @@ async function handle(item: Prepared, env: ToolEnv): Promise<ToolOutcome> {
   return run(item, env, started);
 }
 
+async function turnedOff(item: Extract<Prepared, { kind: "ready" }>, env: ToolEnv): Promise<ToolOutcome> {
+  const started = Date.now();
+  await audit(env, "tool.deny", item.tool.name, { toolUseId: item.block.id, reason: TURNED_OFF_REASON, mode: "off", attended: env.attended });
+  return errorOutcome(item.block, "deny", "denied", `Not run: ${TURNED_OFF_REASON}.`, started);
+}
+
 async function propose(
   item: Extract<Prepared, { kind: "ready" }>,
   reason: string,
@@ -208,7 +254,7 @@ async function run(item: Extract<Prepared, { kind: "ready" }>, env: ToolEnv, sta
   } catch (error) {
     const type = errorType(error);
     const body = JSON.stringify({ error: { type, message: truncate(env.redactor(messageOf(error)), MAX_ERROR_MESSAGE_CHARS) } });
-    const content = tool.untrustedOutput ? wrap(body, tool, env) : body;
+    const content = hasUntrustedOutput(tool) ? wrap(body, tool, env) : body;
     return {
       result: { type: "tool_result", tool_use_id: block.id, is_error: true, content },
       record: { id: block.id, name: tool.name, decision: "allow", ok: false, error: `${type}: tool failed`, durationMs: Date.now() - started },
@@ -236,11 +282,11 @@ async function run(item: Extract<Prepared, { kind: "ready" }>, env: ToolEnv, sta
   };
 }
 
-/** Stringify → redact → truncate → wrap (untrusted tools; this taints the run). */
+/** Stringify → redact → truncate → wrap (untrusted tools, see hasUntrustedOutput; this taints the run). */
 export function formatOutput(output: unknown, tool: ToolDef, env: Pick<ToolEnv, "redactor" | "maxOutputChars" | "markTainted">): string {
   const text = typeof output === "string" ? output : (JSON.stringify(output) ?? "null");
   const limited = truncate(env.redactor(text), env.maxOutputChars);
-  return tool.untrustedOutput ? wrap(limited, tool, env) : limited;
+  return hasUntrustedOutput(tool) ? wrap(limited, tool, env) : limited;
 }
 
 function wrap(text: string, tool: ToolDef, env: Pick<ToolEnv, "markTainted">): string {

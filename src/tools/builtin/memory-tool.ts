@@ -1,11 +1,14 @@
 /**
  * The `memory` tool: batch add / patch / remove on a bounded memory store, through MemoryService. It applies at once
- * only when the store's owner allows add-only writes and the batch only adds; otherwise it creates a proposal. It
- * never changes the running session's memory snapshot.
+ * only when the store's owner allows add-only writes, the batch only adds, the run is attended (a person is in the
+ * chat) and the session is clean (no untrusted text); otherwise it creates a proposal. Unattended runs (scheduled
+ * jobs) always propose: stricter than before, when an unattended add-only batch applied directly. It never changes
+ * the running session's memory snapshot.
  */
 import { z } from "zod";
 import type { MemoryService } from "../../memory/memory.js";
 import type { Evidence, MemoryOp, ToolDef } from "../../types.js";
+import { markKnowledgeTool } from "../knowledge-mark.js";
 
 const text = (max: number) => z.string().min(1).max(max);
 
@@ -50,7 +53,7 @@ export const MEMORY_TOOL_DESCRIPTION = [
 export const FROZEN_NOTE = "This session's memory snapshot does not change.";
 
 export function makeMemoryTool(memory: MemoryService): ToolDef<typeof memoryToolInput> {
-  return {
+  const tool: ToolDef<typeof memoryToolInput> = {
     name: "memory",
     description: MEMORY_TOOL_DESCRIPTION,
     input: memoryToolInput,
@@ -72,8 +75,9 @@ export function makeMemoryTool(memory: MemoryService): ToolDef<typeof memoryTool
         evidence,
         rationale: input.rationale ?? "",
         shadow: ctx.mode === "shadow",
-        // After untrusted text (web, files, tool output from outside), a memory write is always a proposal.
-        noAutoApply: ctx.tainted === true,
+        // After untrusted text (web, files, tool output from outside), and in an unattended run (a scheduled job,
+        // whose prompt may carry outside text and where nobody watches), a memory write is always a proposal.
+        noAutoApply: ctx.tainted !== false || ctx.attended !== true,
       });
       switch (result.status) {
         case "applied":
@@ -85,4 +89,7 @@ export function makeMemoryTool(memory: MemoryService): ToolDef<typeof memoryTool
       }
     },
   };
+  // Marked as a built-in knowledge tool: the approval policy lets it run in every mode but off (its writes are
+  // proposals unless an add-only store accepts them directly).
+  return markKnowledgeTool(tool);
 }

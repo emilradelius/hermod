@@ -5,6 +5,9 @@
  *   no longer applies the proposal is marked rejected with the reason;
  * - skill: the changes become a new version (or the skill is created);
  * - action: `executeAction` runs it when the app provides one; otherwise the proposal stays approved for the app.
+ * A draft made in shadow mode (shadow: true, any kind) is never approved: it is scored, not run. approve throws
+ * ProposalRefusedError("not_allowed") for it and changes nothing. Only a person decides: none of Hermod's own
+ * actors (agent, job, review, system, curator, scheduler, delegate, in any case; see src/safety/actors.ts) may.
  * Every transition is a compare-and-set, so a proposal is never applied twice, and every transition is audited.
  */
 import type {
@@ -19,12 +22,11 @@ import type {
 } from "../types.js";
 import type { MemoryService } from "../memory/memory.js";
 import { applySkillChanges, validateNewSkill, validateSkillName, type SkillService } from "../skills/skills.js";
+import { isNonHumanActor } from "../safety/actors.js";
 import { ProposalRefusedError, SkillError, errorText } from "./errors.js";
 import { recordProposal } from "./record.js";
 
 const DRAFT_SCORES: readonly DraftScore[] = ["as_is", "small_edit", "wrong"];
-/** Actors that may never decide a proposal: the agent only proposes. */
-const NON_HUMAN_ACTOR = /^(?:agent|job|review)(?::|$)/;
 
 export interface ProposalServiceOptions {
   storage: Storage;
@@ -84,10 +86,15 @@ export class ProposalService {
   /**
    * A person approves: pending → approved, then the change is applied (→ applied), or marked rejected with the
    * reason when it no longer applies. Returns null when the proposal does not exist or is not pending (so a second
-   * approval does nothing). Throws when `by` is not a person.
+   * approval does nothing). Throws when `by` is not a person, and ProposalRefusedError("not_allowed") for a shadow
+   * draft (nothing changes).
    */
   async approve(id: Id, by: string, note?: string): Promise<ProposalRecord | null> {
     assertHuman(by);
+    // A draft made in shadow mode is scored, never run: approving it would apply what shadow mode promised not to.
+    // (shadow is set when a proposal is created and never changes, so one read is enough.)
+    const current = await this.#storage.proposals.get(id);
+    if (current?.shadow === true) throw shadowRefusal(id);
     const approved = await this.#storage.proposals.transition(id, ["pending"], "approved", {
       at: this.#iso(),
       by,
@@ -237,9 +244,17 @@ function assertHuman(by: string): void {
   if (typeof by !== "string" || by.trim() === "") {
     throw new ProposalRefusedError("not_allowed", ["A decision needs the person who made it."]);
   }
-  if (NON_HUMAN_ACTOR.test(by.trim())) {
+  // The agent only proposes: none of Hermod's own actors (agent, job, review, system, curator, scheduler, delegate,
+  // in any case) may decide a proposal.
+  if (isNonHumanActor(by)) {
     throw new ProposalRefusedError("not_allowed", [`"${by}" cannot decide proposals: the agent only proposes; a person decides.`]);
   }
+}
+
+function shadowRefusal(id: Id): ProposalRefusedError {
+  return new ProposalRefusedError("not_allowed", [
+    `Proposal "${id}" is a shadow draft: a shadow draft is scored, not run (score it with scoreDraft instead).`,
+  ]);
 }
 
 function refusalCode(code: string): "injection" | "not_applicable" | "invalid" {

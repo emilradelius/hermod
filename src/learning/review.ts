@@ -12,7 +12,8 @@
  *   (requireGrounding), and anything that does not hold up is refused with the reason, which the reviewer sees.
  * - Direct writes: only an add-only batch to a store whose owner allows add-only writes (autoApply "add"), and only
  *   when the reviewed session is an attended chat, every quote comes from a genuine user message's own words (not
- *   a tool result, not the assistant, not the app's context prefix), the reviewed session is not tainted (no
+ *   a tool result, not the assistant, not the app's context prefix up to its last closing tag, not the summary a
+ *   compression stored as a user message), the reviewed session is not tainted (no
  *   meta.tainted, no untrusted wrapper in any of its messages) and this review has not called session_search. The
  *   entry text is not bound to the quote, so text injected into the reviewed conversation or into another session
  *   the search returned could otherwise save itself while citing a harmless user quote. Patches and removals,
@@ -21,6 +22,7 @@
  */
 import { z } from "zod";
 import { runAgentWith, type LoopDeps } from "../loop/agent.js";
+import { COMPRESSION_MARKER } from "../loop/compress.js";
 import { unattendedPolicy } from "../loop/job-runner.js";
 import { isSessionTainted } from "../loop/taint.js";
 import { knowledgeDeps } from "../memory/knowledge-deps.js";
@@ -33,6 +35,7 @@ import { createApprovalPolicy } from "../safety/approvals.js";
 import type { SkillService } from "../skills/skills.js";
 import { memoryOpSchema } from "../tools/builtin/memory-tool.js";
 import { formatSearchResult } from "../tools/builtin/session-search.js";
+import { markKnowledgeTool } from "../tools/knowledge-mark.js";
 import { makeSkillTools, skillChangeSchema } from "../tools/builtin/skill-tools.js";
 import type {
   AgentConfig,
@@ -249,20 +252,53 @@ export function reviewToolset(deps: ReviewToolsetDeps): Toolset {
   };
 }
 
-/** A genuine user message: role user and only text (no tool results, which come from tools). */
-function isGenuineUserMessage(message: MessageRecord): boolean {
+/**
+ * The opening words of the restart message compress writes (summaryMessage in src/loop/compress.ts): the summary of
+ * the conversation, written by the summary model, stored as a role "user" text message. It is not the user's.
+ */
+export const SUMMARY_PREAMBLE = "Summary of the conversation so far.";
+
+/**
+ * A genuine user message: role user and only text (no tool results, which come from tools), and not the summary a
+ * compression wrote (the record right after a compression marker, or a text that starts with the summary preamble).
+ */
+function isGenuineUserMessage(message: MessageRecord, afterMarker: ReadonlySet<Id>): boolean {
   if (message.role !== "user") return false;
+  if (afterMarker.has(message.id)) return false;
+  if (message.text.trimStart().startsWith(SUMMARY_PREAMBLE)) return false;
   const content = message.content;
   if (typeof content === "string") return true;
   return Array.isArray(content) && content.every((block) => block.type === "text");
 }
 
-/** The loop puts volatile app context in front of the user's words as `<context>…</context>`; that part is not the user's. */
-const CONTEXT_PREFIX = /^<context>\n[\s\S]*?\n<\/context>\n\n/;
+/** The ids of the records that directly follow a compression marker (the restart summary), in storage order. */
+function idsAfterCompressionMarker(messages: readonly MessageRecord[]): Set<Id> {
+  const out = new Set<Id>();
+  messages.forEach((message, index) => {
+    if (message.role === "system" && message.text.startsWith(COMPRESSION_MARKER)) {
+      const next = messages[index + 1];
+      if (next) out.add(next.id);
+    }
+  });
+  return out;
+}
 
-/** The user's own words in a genuine user message (without the app's context prefix), whitespace-normalised. */
+/** The loop puts volatile app context in front of the user's words as `<context>\n…\n</context>\n\n`. */
+const CONTEXT_OPEN = "<context>\n";
+const CONTEXT_CLOSE = "\n</context>\n\n";
+
+/**
+ * The user's own words in a genuine user message, whitespace-normalised. The app's context prefix is not the user's,
+ * and context can itself contain the closing tag, so everything up to the LAST closing tag goes (fail safe: when
+ * the user's own words hold the tag too, less is counted as theirs, never more).
+ */
 function ownWords(message: MessageRecord): string {
-  return normalizeWhitespace(message.text.replace(CONTEXT_PREFIX, ""));
+  let text = message.text;
+  if (text.startsWith(CONTEXT_OPEN)) {
+    const end = text.lastIndexOf(CONTEXT_CLOSE);
+    text = end >= 0 ? text.slice(end + CONTEXT_CLOSE.length) : "";
+  }
+  return normalizeWhitespace(text);
 }
 
 /** Only a person typed the user messages of an attended chat (a job's prompt carries pre-step output; a delegate's task is model text). */
@@ -291,6 +327,7 @@ async function groundIn(
   const evidence: Evidence[] = [];
   const problems: string[] = [];
   let allFromUser = true;
+  const afterMarker = idsAfterCompressionMarker(await storage.messages.list(reviewed.id));
   for (const [index, item] of items.entries()) {
     const message = await storage.messages.get(item.messageId);
     if (!message || message.sessionId !== reviewed.id) {
@@ -299,7 +336,7 @@ async function groundIn(
       );
       continue;
     }
-    if (!personWroteUserMessages(reviewed) || !isGenuineUserMessage(message) || !ownWords(message).includes(normalizeWhitespace(item.quote))) {
+    if (!personWroteUserMessages(reviewed) || !isGenuineUserMessage(message, afterMarker) || !ownWords(message).includes(normalizeWhitespace(item.quote))) {
       allFromUser = false;
     }
     evidence.push({ kind: hasToolResult(message) ? "tool_result" : "message", ref: message.id, quote: item.quote });
@@ -377,7 +414,8 @@ export function makeReviewMemoryTool(deps: ReviewToolsetDeps): ToolDef {
       }
     },
   };
-  return tool as ToolDef;
+  // A built-in knowledge tool for the approval policy (it writes only through MemoryService).
+  return markKnowledgeTool(tool as ToolDef);
 }
 
 export function makeReviewSkillProposeTool(deps: ReviewToolsetDeps): ToolDef {
@@ -417,7 +455,8 @@ export function makeReviewSkillProposeTool(deps: ReviewToolsetDeps): ToolDef {
       }
     },
   };
-  return tool as ToolDef;
+  // A built-in knowledge tool for the approval policy (it only ever creates a proposal).
+  return markKnowledgeTool(tool as ToolDef);
 }
 
 /** skill_view for the reviewer: reads without counting a use (a review is not a use; the curator relies on it). */

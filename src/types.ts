@@ -141,7 +141,11 @@ export interface ToolDef<S extends z.ZodType = z.ZodType> {
   /** No side effects; may run in parallel with other read-only calls. */
   readOnly: boolean;
   capabilities: ToolCapability[];
-  /** Output comes from outside (web, user files, MCP, e-mail): it is wrapped as untrusted and taints the session. */
+  /**
+   * Output comes from outside (web, user files, MCP, e-mail): it is wrapped as untrusted and taints the session.
+   * When unset, the output and error text of a tool whose capabilities reach outside the app ("external.write",
+   * "messaging") count as untrusted too (a remote body); set false only when the tool returns nothing from outside.
+   */
   untrustedOutput?: boolean;
   /** Always needs a person's approval, even in autonomous mode. */
   requiresApproval?: boolean;
@@ -639,8 +643,18 @@ export interface RunInput {
   parentSessionId?: Id;
   /** The genuine user message for this turn. */
   userMessage: string;
-  /** Volatile context for this turn (time, today's data). Goes into the user message, never the system prompt. */
+  /**
+   * Volatile context for this turn (time, today's data). Goes into the user message, never the system prompt.
+   * Treated as OUTSIDE text by default: it is wrapped with wrapUntrusted (source "app-context"), so a run with
+   * context starts tainted and the post-session review never counts it as the user's words. Set contextTrusted
+   * when the app built every character of it itself.
+   */
   context?: string;
+  /**
+   * The app vouches that `context` holds only its own data (the time, counters, ids), no outside text such as a
+   * synced note, an e-mail or a web page: it is then passed unwrapped and does not taint the run. Default false.
+   */
+  contextTrusted?: boolean;
   callbacks?: StreamCallbacks & LoopCallbacks;
   signal?: AbortSignal;
 }

@@ -59,7 +59,7 @@ describe("runAgent: plain answers", () => {
     const storage = await setup();
     const model = new FakeModelClient([textMessage("ok")]);
     const secret = fakeSecret();
-    await runAgent(baseConfig(), { userMessage: `my key is ${secret}`, context: "Today is Thursday." }, { storage, model });
+    await runAgent(baseConfig(), { userMessage: `my key is ${secret}`, context: "Today is Thursday.", contextTrusted: true }, { storage, model });
     const request = model.calls[0];
     const first = request?.messages[0];
     const text = JSON.stringify(first);

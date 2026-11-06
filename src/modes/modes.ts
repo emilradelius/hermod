@@ -8,14 +8,12 @@
  * - meetsBar compares the stats with the agent's accuracyBar and minSamples. It only reports; a person decides.
  */
 import type { ProposalService } from "../proposals/proposals.js";
+import { isNonHumanActor } from "../safety/actors.js";
 import type { AgentMode, AgentRecord, DraftScore, Id, ProposalRecord, Storage } from "../types.js";
 
 export const AGENT_MODES: readonly AgentMode[] = Object.freeze(["off", "shadow", "supervised", "autonomous"]);
 export const DRAFT_SCORES: readonly DraftScore[] = Object.freeze(["as_is", "small_edit", "wrong"]);
 export const DEFAULT_SMALL_EDIT_WEIGHT = 0.5;
-
-/** Actors that are not a person: they may never change a mode or score a draft. */
-const NON_HUMAN_ACTOR = /^(?:agent|job|review|system|curator|scheduler)(?::|$)/;
 
 /** A mode change or score that is not allowed. Nothing is written when it is thrown. */
 export class ModeError extends Error {
@@ -33,7 +31,8 @@ export function isAgentMode(value: unknown): value is AgentMode {
 
 function assertHuman(by: unknown, what: string): string {
   if (typeof by !== "string" || by.trim() === "") throw new ModeError("not_allowed", `${what} needs the person who does it.`);
-  if (NON_HUMAN_ACTOR.test(by.trim())) {
+  // Actors that are not a person (agent, job, review, system, …, any case) may never change a mode or score a draft.
+  if (isNonHumanActor(by)) {
     throw new ModeError("not_allowed", `"${by}" cannot ${what.toLowerCase()}: only a person can.`);
   }
   return by.trim();

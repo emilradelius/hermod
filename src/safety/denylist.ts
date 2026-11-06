@@ -5,6 +5,17 @@
  * inside the input on its own (so a shell command is seen exactly as the shell would get it). Matching is
  * case-insensitive and whitespace-tolerant (runs of whitespace, including escaped newlines and tabs, count as one
  * space). Apps can add patterns; there is deliberately no way to remove or replace a default one.
+ *
+ * Each string inside the input is also checked in a normalised form (it only adds denials, never removes one):
+ * - SQL comments (block comments, and line comments that end before more text) become spaces, so "DROP", an empty
+ *   block comment and "TABLE" with no space between them read as "DROP TABLE";
+ * - shell quoting inside words is undone the way the shell would: empty quote pairs ('' "" and empty backticks)
+ *   and backslashes go, closed quote pairs without spaces lose their quotes, and $IFS / ${IFS} become a space, so
+ *   "r''m -rf /" and "rm -rf $IFS/" read as "rm -rf /".
+ *
+ * The denylist is a backstop, not a sandbox: it catches the common forms of the worst commands, and a determined
+ * caller can always spell a command some other way. What keeps a session safe is the approval policy (side effects
+ * are proposals unless the agent is autonomous and the session clean) and the tools an app chooses to give.
  */
 
 export interface DenyPattern {
@@ -48,7 +59,27 @@ const SEG = String.raw`[^;&|\n]{0,500}?`;
 /** Up to 64 words before the dangerous operand ("rm -rf build /"); each word is a run of non-space characters. */
 const WORDS = String.raw`(?:[^\s;&|]{1,500}\s+){0,64}?`;
 const RECURSIVE = String.raw`(?<=^|\s)${Q}(?:-[a-z]*r[a-z]*|--recursive)${Q}(?=\s|$)`;
-const ROOTISH = String.raw`(?:\/\*?|\/\.\*?|~\/?\*?|\*|\.\/\*|\$\{?home\}?\/?\*?)`;
+/**
+ * An operand that is the root, the home directory or everything: "/", "//", "/.", "/..", "/../..", "/*", "~", "~/",
+ * "*", "./*", "$HOME", or a path made only of ".." steps ("..", "../../../../"), which climbs to the root from any
+ * directory deep enough.
+ */
+const ROOTISH = String.raw`(?:\/+(?:\.{1,2}\/+)*\.{0,2}\*?|(?:\.\.\/+)*\.\.\/*\*?|~\/?\*?|\*|\.\/\*|\$\{?home\}?\/?\*?)`;
+/** A shell: whatever is piped into it runs, whatever its flags. */
+const SHELL = String.raw`(?:(?:ba|z|da|k|fi|c|tc|a|y)?sh|pwsh|powershell)\b`;
+/** Another interpreter: python, perl, ruby, node, php, … */
+const SCRIPTER = String.raw`(?:python[\d.]*|pypy[\d.]*|perl[\d.]*|ruby[\d.]*|node(?:js)?|deno|bun|php[\d.]*|lua[\d.]*|tclsh|osascript|rscript)\b`;
+/**
+ * An interpreter reading its program from the pipe: a shell with any flags, or another interpreter with no script
+ * or code argument (nothing, or "-"), so "curl … | python3 -m json.tool" (data, not code) is not matched.
+ */
+const RUNS_STDIN = String.raw`(?:${SHELL}|${SCRIPTER}(?:\s+-(?![cemp]\b|-)[a-z]{1,10}){0,5}(?:\s+-)?\s*(?=$|[;&|)"'\x60\\]))`;
+/** One pipe (not "||"). */
+const PIPE = String.raw`(?<!\|)\|(?!\|)`;
+/** Prefixes before the interpreter in a pipe: sudo (with flags), env (with assignments), command, exec. */
+const RUNNER = String.raw`(?:(?:sudo\s+(?:-\S+\s+){0,5}|env\s+(?:\S+=\S*\s+){0,10}|command\s+|exec\s+)(?:\S*\/)?){0,3}(?:\S*\/)?`;
+/** A SQL object name: words joined by dots, optionally quoted (a trailing full stop is not part of it). */
+const SQL_NAME = String.raw`[\w"]{1,200}(?:\.[\w"]{1,200}){0,3}`;
 const MODE_777 = String.raw`(?<=^|\s)${Q}(?:0?777|a\+rwx|ugo\+rwx)${Q}(?=\s|$)`;
 
 function pattern(id: string, description: string, source: string): DenyPattern {
@@ -58,7 +89,7 @@ function pattern(id: string, description: string, source: string): DenyPattern {
 export const DEFAULT_DENY_PATTERNS: readonly DenyPattern[] = Object.freeze([
   pattern(
     "rm-recursive-root",
-    "recursive delete of /, ~, $HOME or *",
+    "recursive delete of /, ~, $HOME, * or the parent directories",
     String.raw`\brm\s+(?=${SEG}${RECURSIVE})${WORDS}${Q}${ROOTISH}${Q}${END}`,
   ),
   pattern("mkfs", "formatting a file system (mkfs)", String.raw`\bmkfs(?:\.[a-z0-9]+)?\b`),
@@ -84,14 +115,19 @@ export const DEFAULT_DENY_PATTERNS: readonly DenyPattern[] = Object.freeze([
   ),
   pattern(
     "curl-pipe-shell",
-    "downloading a script and piping it into a shell",
-    String.raw`\b(?:curl|wget)\b[^;&|\n]{0,500}\|\s*(?:sudo\s+(?:-\S+\s+){0,5})?(?:ba|z|da|k|fi)?sh\b|\b(?:ba|z)?sh\s+(?:-c\s+)?${Q}(?:<\(|\$\()\s*(?:curl|wget)\b`,
+    "downloading a script and piping it into a shell or another interpreter",
+    String.raw`\b(?:curl|wget|fetch|aria2c)\b[^;&|\n]{0,500}${PIPE}(?:[^;&|\n]{0,200}${PIPE}){0,5}\s*${RUNNER}${RUNS_STDIN}|\b(?:${SHELL}|${SCRIPTER})\s+(?:-\S+\s+){0,3}${Q}(?:<\(|\$\()\s*(?:curl|wget)\b`,
+  ),
+  pattern(
+    "find-delete-root",
+    "find deleting from /, ~, $HOME or the parent directories",
+    String.raw`\bfind\s+(?:-[hlp]\s+){0,3}${Q}${ROOTISH}${Q}${END}(?=${SEG}\s-(?:delete\b|exec(?:dir)?\s+(?:\S*\/)?rm\b))`,
   ),
   pattern("drop-database", "DROP DATABASE, SCHEMA or TABLE", String.raw`\bdrop\s+(?:database|schema|table)\b`),
   pattern(
     "truncate-table",
     "TRUNCATE of a table",
-    String.raw`\btruncate\s+table\b|\btruncate\s+(?:only\s+)?[\w."]{1,200}(?:\s*,\s*[\w."]{1,200}){0,20}\s*(?:;|\s(?:cascade|restrict|restart\s+identity|continue\s+identity)\b)`,
+    String.raw`\btruncate\s+table\b|(?<=^\S*\s|[;("'\x60]\s{0,10}|\b(?:do|execute|begin|then)\s{1,10})truncate\s+(?:only\s+)?${SQL_NAME}(?:\s*,\s*${SQL_NAME}){0,20}\s*\*?\s*(?=;|$|["'\x60)\\])|\btruncate\s+(?:only\s+)?[\w."]{1,200}(?:\s*,\s*[\w."]{1,200}){0,20}\s*(?:;|\s(?:cascade|restrict|restart\s+identity|continue\s+identity)\b)`,
   ),
   pattern(
     "delete-without-where",
@@ -188,6 +224,50 @@ function squash(text: string): string {
   return text.replace(/\\[nrt]/g, " ").replace(/\s+/g, " ").trim();
 }
 
+/** Replaces every span from `open` to the first `close` after it (inclusive) with a space, in one linear pass. */
+function replaceSpans(text: string, open: string, closes: readonly string[]): string {
+  let out = "";
+  let pos = 0;
+  for (;;) {
+    const start = text.indexOf(open, pos);
+    if (start < 0) break;
+    let end = -1;
+    let closeLength = 0;
+    for (const close of closes) {
+      const at = text.indexOf(close, start + open.length);
+      if (at >= 0 && (end < 0 || at < end)) {
+        end = at;
+        closeLength = close.length;
+      }
+    }
+    if (end < 0) break;
+    out += `${text.slice(pos, start)} `;
+    pos = end + closeLength;
+  }
+  return pos === 0 ? text : out + text.slice(pos);
+}
+
+/** SQL comments become a space: block comments, and "--" line comments that end before more text (real or JSON \n). */
+function withoutSqlComments(text: string): string {
+  return replaceSpans(replaceSpans(text, "/*", ["*/"]), "--", ["\n", "\\n"]);
+}
+
+/** Shell quoting inside words undone: empty quote pairs, backslashes and quote pairs without spaces go; $IFS is a space. */
+function withoutShellQuoting(text: string): string {
+  return text
+    .replace(/\$\{?ifs\}?/gi, " ")
+    .replace(/''|""|\x60\x60/g, "")
+    .replace(/\\(?=\S)/g, "")
+    .replace(/'([^'\s]{0,500})'|"([^"\s]{0,500})"/g, (_m, a: string | undefined, b: string | undefined) => a ?? b ?? "");
+}
+
+/** One string as matched: squashed, plus its normalised form (SQL comments and shell quoting undone) when it differs. */
+function forms(text: string): string[] {
+  const plain = squash(text);
+  const normalised = squash(withoutShellQuoting(withoutSqlComments(text)));
+  return normalised === plain ? [plain] : [plain, normalised];
+}
+
 /** Creates a denylist with the defaults plus the app's own patterns. Throws only for an invalid extra pattern. */
 export function createDenylist(options: DenylistOptions = {}): Denylist {
   const extras = (options?.extraPatterns ?? []).map((entry, i) => compileExtra(entry, i));
@@ -205,7 +285,9 @@ export function createDenylist(options: DenylistOptions = {}): Denylist {
     }
     const leaves: string[] = [];
     stringLeaves(call?.input, leaves);
-    const haystacks = [squash(`${tool} ${json}`), ...leaves.map((leaf) => squash(`${tool} ${leaf}`))];
+    // The JSON text is matched as it is (its backslashes and quotes are JSON's); each string on its own is also read
+    // in its normalised form, the way SQL or the shell would get it.
+    const haystacks = [squash(`${tool} ${json}`), ...leaves.flatMap((leaf) => forms(`${tool} ${leaf}`))];
     for (const p of patterns) {
       for (const hay of haystacks) {
         if (p.regex.test(hay)) return { denied: true, pattern: p.id, description: p.description };

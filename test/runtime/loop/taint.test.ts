@@ -214,7 +214,7 @@ describe("taint persists across runs of a session", () => {
 });
 
 describe("taint of scheduled runs", () => {
-  async function runJob(context: string | undefined) {
+  async function runJob(context: string | undefined, options: { trustPreStepOutput?: boolean } = {}) {
     const storage = await setup("autonomous");
     const tools = makeTools();
     const job: JobRecord = await storage.jobs.upsert({
@@ -231,6 +231,7 @@ describe("taint of scheduled runs", () => {
       sleep: noSleep,
       configFor: () => baseConfig([tools.set]),
       onResult: (_job, result) => results.push(result),
+      ...options,
     });
     const results: Awaited<ReturnType<typeof runAgent>>[] = [];
     await runner(job, { attended: false, now: new Date(), signal: new AbortController().signal, ...(context === undefined ? {} : { context }) });
@@ -239,11 +240,18 @@ describe("taint of scheduled runs", () => {
     return { tools, result, session };
   }
 
-  it("pre-step output is app data: a plain pre-step text leaves the run clean", async () => {
-    const { tools, result, session } = await runJob("3 notes were added today.");
+  it("pre-step output the app declares its own (trustPreStepOutput) leaves the run clean", async () => {
+    const { tools, result, session } = await runJob("3 notes were added today.", { trustPreStepOutput: true });
     expect(result?.toolCalls.map((c) => c.decision)).toEqual(["allow"]);
     expect(tools.executed).toEqual(["save_note:nightly"]);
     expect(session?.meta.tainted).toBeUndefined();
+  });
+
+  it("pre-step output is outside text by default: even a plain pre-step text taints the run (fail closed)", async () => {
+    const { tools, result, session } = await runJob("3 notes were added today.");
+    expect(result?.toolCalls.map((c) => c.decision)).toEqual(["deny"]);
+    expect(tools.executed).toEqual([]);
+    expect(session?.meta.tainted).toBe(true);
   });
 
   it("pre-step output the app wrapped as untrusted taints the run from its first call: the side effect is denied", async () => {

@@ -8,19 +8,27 @@
  *   row; a continued session reuses what is stored and never asks again. System prompt: [stable rules + untrusted
  *   rules + the agent's own prompt] [snapshot + index (+ attached skill bodies)], both stable for the session. The
  *   volatile context goes into the user message, in a <context> block. Everything new is redacted.
+ *   Stricter default: RunInput.context is treated as outside text unless the app sets contextTrusted: true. It is
+ *   wrapped with wrapUntrusted (source "app-context"), so a run with context starts tainted (an app's synced note or
+ *   e-mail in the context must not count as the user's words, nor let injected text drive side effects).
  * - request: budgets are checked before every call (model calls, USD: the run's cap and the agent's monthly cap,
- *   wall clock). Errors go through classifyError: retry with backoff (deps.sleep) up to 3 times, then the fallback
+ *   wall clock). Before every attempt (retries, after a fallback-model switch, the compression summary) the month's
+ *   spend is re-read and max_tokens is clamped so the call's worst-case cost fits under what is left (./budget.ts);
+ *   a call that would be left with too few tokens is not made and the run ends with "budget_cost". Errors go through classifyError: retry with backoff (deps.sleep) up to 3 times, then the fallback
  *   model if one is configured (one switch, then up to 3 more retries), compress then retry once for a context
  *   overflow, abort otherwise. A model or tool error ends the run with a reason; runAgent never throws for one.
  * - stop reasons: refusal → end "refusal" (no tools run, partial output discarded); pause_turn → append and send
  *   again; max_tokens with a tool_use → no tool runs, end "max_tokens"; end_turn → done. Assistant content is
  *   appended verbatim (thinking included), except the documented fallback echo rules (SDK facts §2.6).
- * - tools: see ./tools.ts (approval policy, proposals, parallel read-only calls, one user message of results).
+ * - tools: see ./tools.ts (approval policy, proposals, parallel read-only calls, one user message of results). The
+ *   agent's mode is re-read from storage before every side-effecting call: one turned off during the round denies
+ *   the rest, one set to shadow drafts them.
  * - compress: see ./compress.ts (summary on the background model, restart from the summary, never edit a turn).
  * - taint (./taint.ts): belongs to the conversation the model sees, so it lasts for the rest of the SESSION. A run
- *   starts tainted when its parent is (inheritTainted), when the session row says so (meta.tainted), when a loaded
- *   message carries an untrusted wrapper (sessions stored before the flag), or when its own user message does (an
- *   app that wraps pre-step output with wrapUntrusted). The first time a run is tainted, the row records it once
+ *   starts tainted when its parent is (inheritTainted), when the session row says so (meta.tainted), when any stored
+ *   message of the session carries an untrusted wrapper (sessions stored before the flag; before or after a
+ *   compression marker, the same test as the review: isSessionTainted), or when its own user message does (context
+ *   that is not marked trusted, or an app that wraps text with wrapUntrusted). The first time a run is tainted, the row records it once
  *   (meta.tainted, meta.taintedAt). A compression summary of a tainted conversation is wrapped as untrusted too.
  * - finish: session status, endedAt and counters; RunResult. RunResult.proposals lists every proposal created
  *   during the run in its session (action, memory and skill, whoever's tool made it, except the post-session
@@ -63,11 +71,11 @@ import {
   type ToolParam,
   type ToolResultBlockParam,
 } from "../types.js";
-import { budgetStop, createBudget, wallClockUsed, type Budget } from "./budget.js";
+import { availableUsd, budgetStop, clampMaxTokens, createBudget, wallClockUsed, type Budget } from "./budget.js";
 import { COMPRESSION_MARKER, compressConversation, estimateTokens, hasPendingToolUse } from "./compress.js";
 import { DELEGATE_EXCLUDED_CAPABILITIES, DELEGATE_RESULT_CHARS, delegateSettingsOf } from "./delegate.js";
 import { storageKnowledge, type KnowledgeSource } from "./knowledge.js";
-import { containsUntrustedWrapper, markSessionTainted, sessionMarkedTainted } from "./taint.js";
+import { containsUntrustedWrapper, isSessionTainted, markSessionTainted, sessionMarkedTainted } from "./taint.js";
 import { messageOf, runToolRound, truncate, type ToolEnv, type ToolUseLike } from "./tools.js";
 
 export const MAX_RETRIES = 3;
@@ -243,13 +251,20 @@ export async function runAgentWith(
       await append("user", repair.message.content, repair.text);
     }
 
-    const prefix = input.context !== undefined && input.context !== "" ? `<context>\n${input.context}\n</context>\n\n` : "";
-    const userText = redactor(prefix + input.userMessage);
+    // Context is outside text unless the app says it is its own (contextTrusted): wrapped, it taints the run.
+    let prefix = "";
+    if (input.context !== undefined && input.context !== "") {
+      const context = input.contextTrusted === true
+        ? redactor(input.context)
+        : wrapUntrusted(redactor(input.context), { source: "app-context", nonce: createNonce() });
+      prefix = `<context>\n${context}\n</context>\n\n`;
+    }
+    const userText = prefix + redactor(input.userMessage);
     const userMessage: MessageParam = { role: "user", content: [{ type: "text", text: userText }] };
     state.messages.push(userMessage);
     await append("user", userMessage.content, userText);
     state.counters.userTurns += 1;
-    // Context the app wrapped as untrusted (e.g. a job's pre-step output) taints the run from its first call.
+    // Context wrapped as untrusted (by default, or by the app, e.g. a job's pre-step output) taints the run at once.
     if (containsUntrustedWrapper(userMessage.content)) {
       state.tainted = true;
       await recordTaint();
@@ -258,6 +273,19 @@ export async function runAgentWith(
     // ── helpers that use the state ──────────────────────────────────────────────────────────────────────────
     const promptEstimate = (): number => estimateTokens({ system, tools, messages: state.messages });
     const spentOutside = (): number => state.delegatedUsd;
+    // Set when the summary call could not be made within the budget (the run then ends "budget_cost", not "error").
+    let summaryBudgetStopped = false;
+
+    /**
+     * A copy of the request with max_tokens clamped so its worst-case cost fits under what is left of the run's cap
+     * and of the month's cap, re-read now; null when too little is left to make the call.
+     */
+    const fitToBudget = async (built: ModelRequest): Promise<ModelRequest | null> => {
+      const available = await availableUsd(budget, storage, now(), spentOutside());
+      const prompt = estimateTokens({ system: built.system, tools: built.tools, messages: built.messages });
+      const maxTokens = clampMaxTokens(built.model, prompt, built.maxTokens, available);
+      return maxTokens === null ? null : { ...built, maxTokens };
+    };
 
     const buildRequest = (): ModelRequest => {
       const request: ModelRequest = {
@@ -307,7 +335,9 @@ export async function runAgentWith(
       for (;;) {
         if (input.signal?.aborted) return { kind: "failed", end: "aborted" };
         if (wallClockUsed(budget, now().getTime())) return { kind: "failed", end: "budget_time" };
-        const request = build();
+        // Every attempt is fitted again: a retry, the fallback model (other prices), money spent meanwhile.
+        const request = await fitToBudget(build());
+        if (request === null) return { kind: "failed", end: "budget_cost" };
         try {
           const message = await client.complete(request, opts.stream);
           return { kind: "ok", message };
@@ -358,9 +388,15 @@ export async function runAgentWith(
         ...(input.signal ? { signal: input.signal } : {}),
         summarise: async (request) => {
           const estimate = estimateTokens({ system: request.system, messages: request.messages });
-          if (budgetStopFor(budget, state, request.model, estimate, spentOutside(), now()) === "budget_cost") return null;
+          if (budgetStopFor(budget, state, request.model, estimate, spentOutside(), now()) === "budget_cost") {
+            summaryBudgetStopped = true;
+            return null;
+          }
           const outcome = await callModel(() => request, { allowFallback: false });
-          if (outcome.kind !== "ok") return null;
+          if (outcome.kind !== "ok") {
+            if (outcome.kind === "failed" && outcome.end === "budget_cost") summaryBudgetStopped = true;
+            return null;
+          }
           if (!(await recordCost(outcome.message, request.model, "summary"))) return null;
           if (outcome.message.stop_reason === "refusal") return null;
           const text = textOf(outcome.message.content);
@@ -387,7 +423,8 @@ export async function runAgentWith(
       const delegate = delegateSettingsOf(tool);
       return async (task, childOptions) => {
         const share = delegate.shareOfRemaining ?? 0.5;
-        const remaining = Math.max(0, budget.tracker.remainingUsd - state.delegatedUsd);
+        // What is left now (the month's spend re-read): the child's calls are clamped to its slice in turn.
+        const remaining = await availableUsd(budget, storage, now(), state.delegatedUsd);
         let slice = remaining * share;
         const asked = childOptions?.maxCostUsd;
         if (typeof asked === "number" && Number.isFinite(asked) && asked >= 0) slice = Math.min(slice, asked);
@@ -475,7 +512,7 @@ export async function runAgentWith(
       }
       if (outcome.kind === "compress") {
         if (overflowRetried || !(await compress())) {
-          state.end = "error";
+          state.end = summaryBudgetStopped ? "budget_cost" : "error";
           break;
         }
         overflowRetried = true;
@@ -508,7 +545,7 @@ export async function runAgentWith(
       if (stopReason === "model_context_window_exceeded") {
         state.errors.push({ kind: "context_too_long", action: "compress", message: "The model ran out of context window." });
         if (overflowRetried || !(await compress())) {
-          state.end = "error";
+          state.end = summaryBudgetStopped ? "budget_cost" : "error";
           break;
         }
         overflowRetried = true;
@@ -551,6 +588,12 @@ export async function runAgentWith(
           evidenceMessageId: assistantRecord.id,
           actor,
           runChildFor,
+          // Re-read before every side-effecting decision: off or shadow set during the round applies at once.
+          currentMode: async () => {
+            const fresh = await storage.agents.get(state.agentId);
+            if (fresh && fresh.mode !== "off") state.mode = fresh.mode;
+            return fresh ? fresh.mode : null;
+          },
         };
         if (input.signal) env.signal = input.signal;
         const outcomes = await runToolRound(toolUses, registry, env, (record) => callbacks?.onToolCall?.(record));
@@ -622,11 +665,13 @@ async function openSession(
     if (existing.agentId !== config.agentId) {
       throw new Error(`runAgent: session "${input.sessionId}" belongs to agent "${existing.agentId}", not "${config.agentId}".`);
     }
-    const history = rebuildHistory(await storage.messages.list(existing.id));
+    const records = await storage.messages.list(existing.id);
+    const history = rebuildHistory(records);
     const attended = input.attended ?? existing.attended;
     const updated = (await storage.sessions.update(existing.id, { status: "running", endedAt: null })) ?? existing;
-    // Untrusted text from an earlier run is still in the conversation: the flag, or a wrapper in the loaded history.
-    const tainted = sessionMarkedTainted(updated) || history.some((message) => containsUntrustedWrapper(message.content));
+    // Untrusted text from an earlier run: the flag, or a wrapper in ANY stored message of the session (also before a
+    // compression marker: a summary may carry what the page said), the same test as the post-session review.
+    const tainted = isSessionTainted(updated, records);
     return { session: updated, history, attended, tainted };
   }
   const kind: SessionKind = input.kind ?? "chat";
@@ -839,6 +884,9 @@ function validate(config: AgentConfig, input: RunInput, deps: LoopDeps): Setting
   }
   if (input.context !== undefined && typeof input.context !== "string") throw new TypeError("runAgent: input.context must be a string.");
   if (input.attended !== undefined && typeof input.attended !== "boolean") throw new TypeError("runAgent: input.attended must be true or false.");
+  if (input.contextTrusted !== undefined && typeof input.contextTrusted !== "boolean") {
+    throw new TypeError("runAgent: input.contextTrusted must be true or false.");
+  }
   const model = config.model ?? DEFAULTS.main.model;
   priced(model, "config.model");
   const fallbackModel = config.fallbackModel ?? null;

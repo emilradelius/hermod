@@ -9,16 +9,23 @@
  *   attended, storage, …).
  * - `toBetaZodTools(registry, ctxFactory, options)` builds all of a registry's tools with one shared taint flag:
  *   once an untrustedOutput tool has returned text, later side effects are decided as tainted.
+ * - Taint belongs to the session (src/loop/taint.ts), whatever the local flags: before every call the adapter reads
+ *   the session's stored taint (meta.tainted, or an untrusted wrapper in its stored messages), and when a call
+ *   returns untrusted text it records it on the session row (markSessionTainted) and in a per-storage, in-process
+ *   list of tainted session ids (for a session id without a row). So tools built one at a time with
+ *   `toBetaZodTool` share the taint of their session, and taint lasts across runs, as in runAgent. A session whose
+ *   taint cannot be read counts as tainted (fail closed).
  * A denied, invalid or failed call is thrown as the SDK's ToolError, so the runner sends it with is_error: true.
  * Note the SDK runner runs a turn's calls concurrently; for ordered side effects use runAgent instead.
  */
 import { betaZodTool } from "@anthropic-ai/sdk/helpers/beta/zod";
 import { ToolError } from "@anthropic-ai/sdk/lib/tools/ToolError";
 import type { BetaRunnableTool } from "@anthropic-ai/sdk/lib/tools/BetaRunnableTool";
+import { isSessionTainted, markSessionTainted } from "../loop/taint.js";
 import { runToolRound, type ToolEnv } from "../loop/tools.js";
 import { createApprovalPolicy } from "../safety/approvals.js";
 import { secretsRedactor } from "../safety/redact.js";
-import type { ApprovalPolicy, Redactor, ToolContext, ToolDef } from "../types.js";
+import type { ApprovalPolicy, Id, Redactor, Storage, ToolContext, ToolDef } from "../types.js";
 import { ToolRegistry } from "./registry.js";
 
 export interface RunnerAdapterOptions {
@@ -27,13 +34,44 @@ export interface RunnerAdapterOptions {
   redactor?: Redactor;
   /** Default 20,000 characters. */
   maxToolOutputChars?: number;
-  /** Shared taint state across the tools of one conversation. Default: a fresh one per tool. */
+  /**
+   * Shared taint state across the tools of one conversation. Default: a fresh one per tool. Whatever is passed, the
+   * session's stored taint is read before and recorded after every call (see above).
+   */
   taint?: { tainted: boolean };
   /** Allow a tool with the capability "messaging" (owner messages only). Default false. */
   allowOwnerMessaging?: boolean;
 }
 
 let callCounter = 0;
+
+/** Sessions this process has seen tainted, per storage (covers a session id that has no stored row). */
+const taintedSessions = new WeakMap<Storage, Set<Id>>();
+
+function seenTainted(storage: Storage, sessionId: Id): boolean {
+  return taintedSessions.get(storage)?.has(sessionId) === true;
+}
+
+function rememberTainted(storage: Storage, sessionId: Id): void {
+  let set = taintedSessions.get(storage);
+  if (!set) {
+    set = new Set();
+    taintedSessions.set(storage, set);
+  }
+  set.add(sessionId);
+}
+
+/** The session's stored taint (row flag or an untrusted wrapper in its messages); true when it cannot be read. */
+async function storedTaint(storage: Storage, sessionId: Id): Promise<boolean> {
+  if (seenTainted(storage, sessionId)) return true;
+  try {
+    const session = await storage.sessions.get(sessionId);
+    if (!session) return false;
+    return isSessionTainted(session, await storage.messages.list(sessionId));
+  } catch {
+    return true;
+  }
+}
 
 export function toBetaZodTool(
   def: ToolDef,
@@ -54,6 +92,8 @@ export function toBetaZodTool(
     eager_input_streaming: true,
     async run(input, runContext) {
       const ctx = await ctxFactory();
+      const sessionTainted = await storedTaint(ctx.storage, ctx.sessionId);
+      let record: Promise<unknown> | null = null;
       const env: ToolEnv = {
         agentId: ctx.agentId,
         sessionId: ctx.sessionId,
@@ -65,9 +105,12 @@ export function toBetaZodTool(
         redactor,
         approvals,
         maxOutputChars,
-        isTainted: () => ctx.tainted || taint.tainted,
+        isTainted: () => ctx.tainted !== false || taint.tainted || sessionTainted || seenTainted(ctx.storage, ctx.sessionId),
         markTainted: () => {
           taint.tainted = true;
+          rememberTainted(ctx.storage, ctx.sessionId);
+          // Recorded on the session row too, so later runs and every other tool of the session start tainted.
+          record ??= markSessionTainted(ctx.storage, ctx.sessionId, ctx.now()).catch(() => false);
         },
         actor: `agent:${ctx.agentId}`,
       };
@@ -75,7 +118,12 @@ export function toBetaZodTool(
       if (signal) env.signal = signal;
       callCounter += 1;
       const id = runContext?.toolUse?.id ?? `runner_${callCounter}`;
-      const [outcome] = await runToolRound([{ id, name: tool.name, input }], registry, env);
+      let outcome: Awaited<ReturnType<typeof runToolRound>>[number] | undefined;
+      try {
+        [outcome] = await runToolRound([{ id, name: tool.name, input }], registry, env);
+      } finally {
+        if (record) await record;
+      }
       const content = outcome?.result.content;
       const text = typeof content === "string" ? content : JSON.stringify(content ?? "");
       if (!outcome || outcome.result.is_error === true) throw new ToolError(text);

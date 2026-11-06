@@ -14,7 +14,7 @@ export {
   runAgent,
 } from "./agent.js";
 export type { LoopDeps } from "./agent.js";
-export { DEFAULT_MAX_COST_USD, DEFAULT_MAX_ITERATIONS, startOfMonthUtc } from "./budget.js";
+export { DEFAULT_MAX_COST_USD, DEFAULT_MAX_ITERATIONS, MIN_USEFUL_OUTPUT_TOKENS, clampMaxTokens, startOfMonthUtc } from "./budget.js";
 export {
   COMPRESSION_MARKER,
   REFERENCE_ONLY,
@@ -50,5 +50,12 @@ export {
   markSessionTainted,
   sessionMarkedTainted,
 } from "./taint.js";
-export { SEARCH_TEXT_TOOL_OUTPUT_CHARS, isParallelSafe, runToolRound } from "./tools.js";
+export {
+  OUTSIDE_CAPABILITIES,
+  SEARCH_TEXT_TOOL_OUTPUT_CHARS,
+  TURNED_OFF_REASON,
+  hasUntrustedOutput,
+  isParallelSafe,
+  runToolRound,
+} from "./tools.js";
 export type { ToolEnv, ToolOutcome, ToolUseLike } from "./tools.js";

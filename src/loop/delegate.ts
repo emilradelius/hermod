@@ -8,11 +8,15 @@
  * - gets a slice of what is left of the parent's USD budget (default half), counted against the parent too;
  * - inherits the parent's mode, attended flag and taint (a tainted parent cannot launder a task through a child);
  * - returns only its final text, cut to 4,000 characters. If the child read untrusted text, the parent becomes
- *   tainted and the text comes back wrapped as untrusted.
+ *   tainted and the text comes back wrapped as untrusted. The text is cut once, before it is wrapped; the tool never
+ *   cuts a wrapped result again (that could drop the closing tag). A wrapped result longer than the cut plus room
+ *   for the wrapper is cut and wrapped once more, so it always ends with its closing tag and stays untrusted.
  * The delegate tool itself has the capability "delegation" (a side effect for the approval policy).
  */
 import { z } from "zod";
+import { createNonce, wrapUntrusted } from "../safety/untrusted.js";
 import type { Effort, ToolCapability, ToolDef } from "../types.js";
+import { containsUntrustedWrapper } from "./taint.js";
 import { truncate } from "./tools.js";
 
 export const DELEGATE_SETTINGS: unique symbol = Symbol.for("hermod.delegate.settings");
@@ -24,6 +28,8 @@ export const DELEGATE_EXCLUDED_CAPABILITIES: readonly ToolCapability[] = Object.
   "delegation",
 ]);
 export const DELEGATE_RESULT_CHARS = 4_000;
+/** Room for the untrusted wrapper (tags, source, nonce) and the truncation note around a cut result. */
+export const DELEGATE_WRAPPER_ROOM = 256;
 export const DEFAULT_DELEGATE_SHARE = 0.5;
 export const DEFAULT_DELEGATE_ITERATIONS = 10;
 
@@ -89,12 +95,24 @@ export function makeDelegateTool(options: DelegateOptions = {}): ToolDef<typeof 
         throw new Error("Delegation is not available in this run (no runChild in the tool context).");
       }
       const text = await ctx.runChild(input.task, input.toolsets ? { toolsets: input.toolsets } : {});
-      return truncate(text, DELEGATE_RESULT_CHARS);
+      return limitResult(text);
     },
     [DELEGATE_SETTINGS]: Object.freeze(settings),
   };
   Object.defineProperty(tool, DELEGATE_SETTINGS, { enumerable: false });
   return tool;
+}
+
+/**
+ * The delegate's result, at most DELEGATE_RESULT_CHARS plus room for the wrapper. Plain text is cut. Text that holds
+ * an untrusted wrapper was cut before it was wrapped (runChild does that); it is kept whole when it fits, and
+ * otherwise cut and wrapped again, so the closing tag is never cut off and the text stays untrusted.
+ */
+export function limitResult(text: string): string {
+  const value = typeof text === "string" ? text : String(text ?? "");
+  if (!containsUntrustedWrapper(value)) return truncate(value, DELEGATE_RESULT_CHARS);
+  if (value.length <= DELEGATE_RESULT_CHARS + DELEGATE_WRAPPER_ROOM) return value;
+  return wrapUntrusted(truncate(value, DELEGATE_RESULT_CHARS), { source: "delegate", nonce: createNonce() });
 }
 
 /** The settings a delegate tool was made with (defaults for any other delegation tool). */

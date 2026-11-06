@@ -6,8 +6,10 @@
  *   (unused < staleDays) returns to active. An archived skill stays archived: a person restores it.
  * - Pinned skills are exempt. Nothing is ever deleted: only the status flag changes, the version history is untouched.
  * - Every status change writes an audit entry. With dryRun nothing is written; the report says what would change.
+ * - Off means off: for an agent that is off, curate throws AgentOffError before reading a skill or writing anything
+ *   (also in a dry run). An agent that does not exist is a programming error (TypeError).
  */
-import type { Id, SkillRecord, SkillStatus, Storage } from "../types.js";
+import { AgentOffError, type Id, type SkillRecord, type SkillStatus, type Storage } from "../types.js";
 
 export const DEFAULT_STALE_DAYS = 14;
 export const DEFAULT_ARCHIVE_DAYS = 30;
@@ -78,6 +80,10 @@ export async function curate(storage: Storage, options: CurateOptions): Promise<
   if (archiveDays < staleDays) throw new TypeError("curate: archiveDays must be at least staleDays.");
   const dryRun = options.dryRun === true;
   const at = options.now.toISOString();
+
+  const agent = await storage.agents.get(options.agentId);
+  if (!agent) throw new TypeError(`curate: there is no agent "${options.agentId}".`);
+  if (agent.mode === "off") throw new AgentOffError(agent.id);
 
   const skills = await storage.skills.list(options.agentId);
   const report: CuratorReport = {

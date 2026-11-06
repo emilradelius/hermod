@@ -94,7 +94,11 @@ describe("delegate tool", () => {
     const child = (await storage.sessions.listByAgent(AGENT)).find((s) => s.kind === "delegate");
     const childCosts = await storage.costs.list({ sessionId: child?.id ?? "" });
     expect(childCosts.length).toBe(1);
-    expect(lastResultText(model.calls[2]?.messages)).toContain("budget_cost");
+    // The child's result reaches the parent's conversation (stored), whether or not the parent can afford another
+    // call: since the cap bounds output too, the parent's next call may itself end the run with "budget_cost".
+    const stored = await storage.messages.list(result.sessionId);
+    expect(stored.some((m) => JSON.stringify(m.content).includes("stopped early: budget_cost"))).toBe(true);
+    if (model.calls[2]) expect(lastResultText(model.calls[2].messages)).toContain("budget_cost");
     expect(result.costUsd).toBeLessThanOrEqual(0.02 + 1e-9);
   });
 

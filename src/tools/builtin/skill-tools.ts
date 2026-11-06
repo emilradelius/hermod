@@ -6,6 +6,7 @@ import { ProposalRefusedError } from "../../proposals/errors.js";
 import type { ProposalService } from "../../proposals/proposals.js";
 import { indexLine, type SkillService } from "../../skills/skills.js";
 import type { Evidence, SkillChange, ToolDef } from "../../types.js";
+import { markKnowledgeTool } from "../knowledge-mark.js";
 
 const skillName = z
   .string()
@@ -118,5 +119,6 @@ export function makeSkillTools(
     },
   };
 
-  return [skillList, skillView, skillPropose];
+  // Only skill_propose writes; it is marked as a built-in knowledge tool (it only ever creates a proposal).
+  return [skillList, skillView, markKnowledgeTool(skillPropose)];
 }

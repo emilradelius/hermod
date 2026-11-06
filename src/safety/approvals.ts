@@ -16,15 +16,20 @@
  *    unattended run never gets is an approval it would need right now: an autonomous call that needs approval, or
  *    one made after untrusted text, is denied (deny by default). The caller records denials in the audit log.
  *
- * 3b. A knowledge tool (capabilities only "read", "memory.write" and/or "skills.write", not requiresApproval) → allow,
- *    in every mode except off: it writes only through MemoryService / ProposalService, which create proposals unless
- *    a store's owner allows add-only writes, and never apply directly in shadow mode or after untrusted text. Wrapping
- *    it in a second "action" proposal would only hide the real proposal.
+ * 3b. A built-in knowledge tool (Hermod's own memory and skill_propose tools and the review's, marked by their
+ *    factories; capabilities only "read", "memory.write" and/or "skills.write"; not requiresApproval) → allow, in
+ *    every mode except off: it writes only through MemoryService / ProposalService, which create proposals unless a
+ *    store's owner allows add-only writes, and never apply directly in shadow mode, unattended or after untrusted
+ *    text. Wrapping it in a second "action" proposal would only hide the real proposal. Capabilities are
+ *    self-declared, so the exemption needs the factories' private mark (src/tools/knowledge-mark.ts): an app's own
+ *    tool that declares only memory.write / skills.write follows the side-effect rules of step 4 and 5 (stricter
+ *    than before, when the capabilities alone were enough).
  *
  * A tool is read-only only when it says so AND has no capability other than "read"; a tool that claims to be
  * read-only but declares a write, messaging, scheduling or delegation capability is treated as a side effect.
  */
 import type { ApprovalContext, ApprovalDecision, ApprovalPolicy, ToolDef } from "../types.js";
+import { isBuiltInKnowledgeTool } from "../tools/knowledge-mark.js";
 import { defaultDenylist, type DenyResult, type Denylist } from "./denylist.js";
 
 export interface ApprovalPolicyOptions {
@@ -45,8 +50,12 @@ function toolName(tool: ToolDef | undefined): string {
 
 const KNOWLEDGE_CAPABILITIES = new Set(["read", "memory.write", "skills.write"]);
 
-/** A tool that only reads and writes knowledge (memory, skills) through the proposal services. */
+/**
+ * A built-in tool that only reads and writes knowledge (memory, skills) through the proposal services. The mark is
+ * set only by Hermod's own factories; declared capabilities alone never earn the exemption.
+ */
 function isKnowledgeTool(tool: ToolDef): boolean {
+  if (!isBuiltInKnowledgeTool(tool)) return false;
   const caps = Array.isArray(tool.capabilities) ? tool.capabilities : [];
   return caps.length > 0 && caps.every((c) => KNOWLEDGE_CAPABILITIES.has(c)) && caps.some((c) => c !== "read");
 }

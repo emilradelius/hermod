@@ -1,3 +1,4 @@
+export { NON_HUMAN_ACTOR_KINDS, NON_HUMAN_ACTOR_PATTERN, isNonHumanActor } from "./actors.js";
 export { createApprovalPolicy } from "./approvals.js";
 export type { ApprovalPolicyOptions, Decision } from "./approvals.js";
 export { DEFAULT_DENY_PATTERNS, createDenylist, defaultDenylist } from "./denylist.js";
