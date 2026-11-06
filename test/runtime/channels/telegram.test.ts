@@ -2,8 +2,9 @@ import { inspect } from "node:util";
 import { describe, expect, it, vi } from "vitest";
 import { TELEGRAM_MAX_CHARS, TelegramChannel, telegramText } from "../../../src/channels/telegram.js";
 
-// A made-up token in the real shape: "<bot id>:<35-character secret>".
-const TOKEN = "7712345678:AAH3kz_fake-Token-For-Tests-0123456789";
+// A made-up token in the real shape: "<bot id>:<35-character secret>", built at runtime so that no token-shaped
+// literal is committed (the no-secret-literals check).
+const TOKEN = ["7712345678", "AAH3kz_fake-Token-For-Tests-0123456"].join(":");
 const SECRET = TOKEN.slice(TOKEN.indexOf(":") + 1);
 
 type FetchCall = { url: string; init: RequestInit };

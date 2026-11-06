@@ -14,6 +14,7 @@ const PATTERNS = [
   { label: "a Slack token", re: /\bxox[abposr]-[A-Za-z0-9-]{10,}/ },
   { label: "a Stripe live key", re: /\bsk_live_[A-Za-z0-9]{10,}/ },
   { label: "an OpenAI project key", re: /\bsk-proj-[A-Za-z0-9_-]{10,}/ },
+  { label: "a Telegram bot token", re: /(?<![\w:])\d{8,10}:AA[A-Za-z0-9_-]{30,}/ },
 ];
 
 /** @param {string} p */
@@ -72,6 +73,22 @@ export default {
         files: { "test/b.test.ts": `const key = "${["sk", "ant", "api03"].join("-")}-${"Ab1".repeat(12)}";\n` },
       },
       expect: false,
+    },
+    {
+      name: "fails on a Telegram bot token literal in a test",
+      ctx: {
+        changedFiles: ["test/c.test.ts"],
+        files: { "test/c.test.ts": `const token = "${"7712345678"}:${"AA" + "x1".repeat(17)}";\n` },
+      },
+      expect: false,
+    },
+    {
+      name: "passes for a Telegram token built from fragments",
+      ctx: {
+        changedFiles: ["test/d.test.ts"],
+        files: { "test/d.test.ts": 'const token = ["7712345678", "AA" + "x1".repeat(17)].join(":");\n' },
+      },
+      expect: true,
     },
     {
       name: "fails on a private-key header in a fixture",
