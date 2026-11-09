@@ -1,0 +1,73 @@
+{
+  "name": "hermod",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A Hermes-style learning kit for Claude Code repos and a small agent runtime on the Anthropic SDK. The agent only proposes; a person or a test decides.",
+  "license": "MIT",
+  "author": "Emil Radelius",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/emilradelius/hermod.git"
+  },
+  "type": "module",
+  "engines": {
+    "node": ">=22.12"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./testing": {
+      "types": "./dist/testing/index.d.ts",
+      "default": "./dist/testing/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "LICENSE",
+    "README.md"
+  ],
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.kit.json",
+    "typecheck:kit": "tsc -p tsconfig.kit.json",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "build": "rm -rf dist && tsc -p tsconfig.build.json",
+    "eval": "npm run build && node evals/run.mjs",
+    "eval:live": "npm run build && node evals/run.mjs --live",
+    "check": "npm run typecheck && npm run lint && npm test"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "1.1.0",
+    "zod": "4.6.7"
+  },
+  "peerDependencies": {
+    "better-sqlite3": "12.11.1",
+    "postgres": "3.4.9"
+  },
+  "peerDependenciesMeta": {
+    "better-sqlite3": {
+      "optional": true
+    },
+    "postgres": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@types/better-sqlite3": "7.6.13",
+    "@types/node": "22.20.5",
+    "better-sqlite3": "12.11.1",
+    "eslint": "10.13.0",
+    "globals": "17.13.0",
+    "postgres": "3.4.9",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.72.0",
+    "vite": "7.3.7",
+    "vitest": "4.1.12"
+  }
+}

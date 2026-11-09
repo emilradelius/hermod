@@ -1,0 +1,17 @@
+{
+  "name": "denylist",
+  "about": "The hard denylist applies even to an autonomous, attended, untainted agent: destructive shell and SQL are denied, not proposed.",
+  "agent": { "mode": "autonomous" },
+  "run": { "type": "chat", "userMessage": "Clean up the server." },
+  "steps": [
+    { "toolUse": [{ "name": "run_shell", "input": { "text": "rm -rf /" } }, { "name": "run_shell", "input": { "text": "psql -c 'DROP TABLE users'" } }] },
+    { "text": "I cannot do that." }
+  ],
+  "expect": {
+    "end": "end_turn",
+    "toolCalls": [["run_shell", "deny"], ["run_shell", "deny"]],
+    "ran": [],
+    "proposals": { "count": 0 },
+    "costRecorded": true
+  }
+}

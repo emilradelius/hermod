@@ -1,0 +1,17 @@
+{
+  "name": "scheduled-delivered",
+  "about": "The control for [SILENT]: a job with something to say is delivered once to its target, resolved when it fires.",
+  "run": {
+    "type": "job",
+    "createdAt": "2026-11-05T12:00:00.000Z",
+    "tickAt": "2026-11-06T03:00:00.000Z",
+    "job": { "name": "Nightly check", "schedule": "0 3 * * *", "timeZone": "Europe/Stockholm", "prompt": "Check the notes.", "deliver": "inapp:owner" }
+  },
+  "steps": [{ "text": "One note needs you: buy milk." }],
+  "expect": {
+    "end": "end_turn",
+    "tick": { "claimed": 1, "ran": 1, "silent": 0, "delivered": 1, "failed": 0 },
+    "deliveries": 1,
+    "costRecorded": true
+  }
+}

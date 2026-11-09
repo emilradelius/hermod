@@ -1,0 +1,21 @@
+{
+  "name": "scheduled-silent",
+  "about": "A scheduled job whose run ends with exactly [SILENT] delivers nothing; the run itself happened and was billed.",
+  "run": {
+    "type": "job",
+    "createdAt": "2026-11-05T12:00:00.000Z",
+    "tickAt": "2026-11-06T03:00:00.000Z",
+    "job": { "name": "Nightly check", "schedule": "0 3 * * *", "timeZone": "Europe/Stockholm", "prompt": "Check the notes. Say [SILENT] if nothing needs attention.", "deliver": "inapp:owner" }
+  },
+  "steps": [
+    { "toolUse": [{ "name": "read_note", "input": { "id": "inbox" } }] },
+    { "text": "  [SILENT]\n" }
+  ],
+  "expect": {
+    "end": "end_turn",
+    "ran": ["read_note"],
+    "tick": { "claimed": 1, "ran": 1, "silent": 1, "delivered": 0, "failed": 0 },
+    "deliveries": 0,
+    "costRecorded": true
+  }
+}

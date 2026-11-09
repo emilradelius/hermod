@@ -1,0 +1,16 @@
+{
+  "name": "plain-answer",
+  "about": "One question, one answer: no tools run, nothing is proposed, the call's cost is recorded.",
+  "run": { "type": "chat", "userMessage": "What should I do first today?" },
+  "steps": [{ "text": "Start with the note you flagged yesterday." }],
+  "expect": {
+    "end": "end_turn",
+    "text": "Start with the note you flagged yesterday.",
+    "modelCalls": 1,
+    "toolCalls": [],
+    "ran": [],
+    "proposals": { "count": 0 },
+    "stores": { "memory": { "unchanged": true }, "user": { "unchanged": true } },
+    "costRecorded": true
+  }
+}

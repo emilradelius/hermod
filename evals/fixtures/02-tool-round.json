@@ -1,0 +1,19 @@
+{
+  "name": "tool-round",
+  "about": "A read-only tool round: the tool runs, its result goes back to the model in the next request, then the answer.",
+  "run": { "type": "chat", "userMessage": "What does note 7 say?" },
+  "steps": [
+    { "toolUse": [{ "name": "read_note", "input": { "id": "7" } }] },
+    { "text": "Note 7 says: buy milk." }
+  ],
+  "expect": {
+    "end": "end_turn",
+    "text": "Note 7 says: buy milk.",
+    "modelCalls": 2,
+    "toolCalls": [["read_note", "allow"]],
+    "ran": ["read_note"],
+    "requestIncludes": [{ "call": 1, "text": "Note 7: buy milk." }],
+    "proposals": { "count": 0 },
+    "costRecorded": true
+  }
+}

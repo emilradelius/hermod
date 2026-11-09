@@ -1,0 +1,23 @@
+{
+  "name": "skill-propose",
+  "about": "skill_propose never changes a skill: the patch is a pending proposal and the skill stays at version 1.",
+  "seed": { "skills": [{ "name": "weekly-review", "description": "Run the weekly review. Use it on Fridays.", "body": "1. List open items.\n2. Pick three." }] },
+  "run": { "type": "chat", "userMessage": "I always pick five items in the weekly review, not three." },
+  "steps": [
+    {
+      "toolUse": [
+        {
+          "name": "skill_propose",
+          "input": { "skill": "weekly-review", "changes": [{ "change": "patch", "old": "Pick three.", "new": "Pick five." }], "rationale": "The user picks five." }
+        }
+      ]
+    },
+    { "text": "Proposed the change." }
+  ],
+  "expect": {
+    "end": "end_turn",
+    "proposals": { "count": 1, "kinds": ["skill"], "statuses": ["pending"], "targets": ["weekly-review"] },
+    "skills": { "weekly-review": { "version": 1 } },
+    "costRecorded": true
+  }
+}

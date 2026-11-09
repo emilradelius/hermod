@@ -1,0 +1,17 @@
+{
+  "name": "memory-autoapply-patch-proposed",
+  "about": "Even on an add-only store, a patch or a removal is never applied directly: each is a pending proposal.",
+  "seed": { "stores": [{ "name": "user", "capChars": 1375, "autoApply": "add", "entries": ["User works in Stockholm.", "User likes tea."] }] },
+  "run": { "type": "chat", "userMessage": "I moved to Uppsala and stopped drinking tea." },
+  "steps": [
+    { "toolUse": [{ "name": "memory", "input": { "store": "user", "ops": [{ "op": "patch", "old": "Stockholm", "new": "User works in Uppsala." }] } }] },
+    { "toolUse": [{ "name": "memory", "input": { "store": "user", "ops": [{ "op": "remove", "old": "User likes tea." }] } }] },
+    { "text": "Proposed both changes." }
+  ],
+  "expect": {
+    "end": "end_turn",
+    "proposals": { "count": 2, "kinds": ["memory", "memory"], "statuses": ["pending", "pending"] },
+    "stores": { "user": { "unchanged": true } },
+    "costRecorded": true
+  }
+}
