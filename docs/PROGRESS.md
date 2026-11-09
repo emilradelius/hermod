@@ -3,8 +3,10 @@
 Short on purpose, so a new session can read it whole: the current status, the next step, open questions, what is
 not done or not verified, and one line per recent session. Each decision is one line in `docs/decisions.md`.
 
-## Status (2026-11-06)
-- **Part A, the kit, is built** on the working branch (PR #1): session brief, lessons and skills with a validator,
+## Status (2026-11-09)
+- **0.1.0 is merged** (PR #1, squash commit `32589df`, 2026-11-09). The tag `v0.1.0` is not on GitHub yet (see
+  Next step).
+- **Part A, the kit, is built**: session brief, lessons and skills with a validator,
   the Stop ritual check, the session ledger, `/reflect` and its evidence bundle, lessons as checks, recall (BM25),
   the curator, and the pinned sync with opt-in library skills. 795 kit tests. `docs/kit.md`.
 - **Part B, the runtime, is built**: storage (memory, SQLite, Postgres), safety, the model client, tools, the loop,
@@ -17,15 +19,17 @@ not done or not verified, and one line per recent session. Each decision is one 
   build, multi-line imports, floating CI versions, `.env.example`, two speed-ups, a duplicate helper), and an
   independent verifier re-checked the runtime fixes. `/security-review`: no high-confidence vulnerabilities.
 - Whole suite with Postgres: 93 files, 2,599 tests; evals 19/19; CI green.
-- **Installed** in Emil's three target repositories, each as a draft pull request there: the kit in all three, the
-  runtime vendored into one app (a second, stacked pull request), and an agent plan for another, for Emil's approval.
-  This repository is public, so their names and details stay in their own progress logs.
+- **Installed and merged** in Emil's three target repositories (2026-11-09), each pinned to `32589df`: the kit in
+  all three, the runtime vendored into one app, and an agent plan for another, which waits for Emil's answers. This
+  repository is public, so their names and details stay in their own progress logs.
 
 ## Next step
-- Emil reviews and merges this pull request. Then tag the merge commit `v0.1.0`, re-sync the kit into each target
-  repository at the tag (`node scripts/sync.mjs --target <repo> --ref v0.1.0`, each in its own pull request), and
-  re-vendor the runtime into the app that vendors it (`node scripts/vendor-runtime.mjs --target <app>/vendor/hermod --ref
-  v0.1.0`).
+- Emil adds the tag `v0.1.0` on `32589df` on GitHub: Releases, Draft a new release, tag `v0.1.0`, target the commit
+  `32589df`, Publish. The session that merged it was refused a tag push (HTTP 403; branch pushes work). Settle the
+  licence question below first if it is still open.
+- A later kit or runtime change reaches the targets the same way, each in its own pull request there:
+  `node scripts/sync.mjs --target <repo> --ref <tag or full sha>` and
+  `node scripts/vendor-runtime.mjs --target <app>/vendor/hermod --ref <tag or full sha>`.
 
 ## Open questions
 - Unattended runs: the 2026-11-05 decision let them add memories to an add-only store. The hardening made the
@@ -37,8 +41,6 @@ not done or not verified, and one line per recent session. Each decision is one 
 - One target repository turned the ledger off, because failed command output can hold personal text. Then no
   skill use is recorded either (the curator now says so instead of calling every skill stale). A ledger mode that
   records only the command, its exit code and skill use would let such a repository turn it back on. Worth building?
-- Some commit messages on this branch name the target repositories (for example "found by /code-review on the ...
-  pull request"). A squash merge keeps them out of `main`'s history; a merge commit keeps them. Which do you want?
 
 ## Not done / not verified
 - No live API call was made: `npm run eval:live` needs `HERMOD_LIVE=1` and a key, and was not run. Every model call
@@ -54,6 +56,8 @@ not done or not verified, and one line per recent session. Each decision is one 
   tooling (dev-time, no runtime exposure). Revisit when ESLint and typescript-eslint move past it.
 
 ## Recent sessions
+- 2026-11-09: PR #1 squash-merged as `32589df` (0.1.0) on Emil's word, and the pull requests in the three targets
+  too; each target pinned to `32589df` in a follow-up pull request. The tag could not be pushed (see Next step).
 - 2026-11-06: /reflect, on evidence gathered by hand: a check, `no-floating-versions` (no `@latest`/`@canary`,
   actions by SHA, exact runners, images and Node), and the seeded checks README now documents `ctx.git`'s result
   and literal pathspecs and that a check never runs repository files.
