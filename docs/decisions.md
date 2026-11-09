@@ -70,5 +70,7 @@ earlier one, change the old line to say "replaced by …" instead of deleting it
   vitest's optional peers) and `ignore-scripts`, with better-sqlite3 rebuilt explicitly.
 
 ## Repository setup
+- 2026-11-09, Emil ("merge them", on Claude's advice): PR #1 was squash-merged as `32589df`, so the branch's commit
+  messages that name the target repositories stay out of `main`'s history. The tag `v0.1.0` belongs on that commit.
 - 2026-11-05, Claude: an empty root commit was pushed to `main` so the empty repository has a base branch for pull
   requests; all content arrives through the first pull request.
