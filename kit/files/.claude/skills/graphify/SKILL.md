@@ -11,10 +11,17 @@ Code parsing is local: no model call, nothing leaves the machine.
 
 ## Hard rules
 
-1. **The graph is private.** It maps the repository's structure. Keep it out of git: always write it under
-   `.claude/hermod/.local/` (self-ignoring), never to the default `graphify-out/` in the repository. Never commit,
-   paste or upload `graph.json`, `graph.html` or `GRAPH_REPORT.md`. A check in `.claude/hermod/checks/` fails when
-   one is changed in a commit.
+1. **The graph maps the repository, so it lives in one of two places.** Default, and always in a public
+   repository: `.claude/hermod/.local/graphify-out` (self-ignoring; it stays on the device and is rebuilt on
+   another). In a **private** repository that a person has opted in, by creating `.claude/hermod/graph/ALLOW_COMMIT`,
+   build into `.claude/hermod/graph/graphify-out` so the graph is committed and follows the person between devices.
+   Never create `ALLOW_COMMIT` yourself; it counts only once it is already in the base commit, so it is its own pull
+   request that a person merges. Before opting a repository in, build once and search `graph.json` for the home
+   directory path and for backslashes: a graph that carries them differs per computer and must not be committed.
+   Commit only `graph.json`, `GRAPH_REPORT.md` and `memory/` there, never
+   `cache/` or `.graphify_*` (a `.claude/hermod/graph/.gitignore` listing both makes that automatic). Never paste or
+   upload the graph, and never write it anywhere else, in particular not the default `graphify-out/` in the
+   repository root. A check in `.claude/hermod/checks/` fails a change that breaks this.
 2. **Code only.** Always pass `--code-only`. Never run the document, image or video pass: it sends file contents to
    a model, and this repository allows Anthropic only. Never pass `--backend` with another provider.
 3. **Do not install it into the assistant.** Never run `graphify install`, `graphify hook install` or
@@ -38,23 +45,31 @@ if it was ever installed into an assistant on this computer, expect those files 
 
 ## Procedure
 
-The commands below come from graphify's `--help` and were not run when this skill was written. If one fails or the
-graph is not where step 1 looks, stop and tell the person; do not fall back to the default `graphify-out/`.
+Verified on Windows PowerShell with graphify 0.9.105 on a real repository: the build, `god-nodes`, `explain` and
+`affected` (the graph landed under `.local`, nothing appeared in the repository root, and no model was called).
+`query` and `path` have not been run yet. If a command fails or the graph is not where step 1 looks, stop and tell
+the person; do not fall back to the default `graphify-out/`.
 
-1. Check whether a graph exists: `ls .claude/hermod/.local/graphify-out/graph.json`.
-2. If not, or after large changes, build it (code only, output under `.local`):
+1. Pick the folder: `D=.claude/hermod/graph/graphify-out` if `.claude/hermod/graph/ALLOW_COMMIT` exists,
+   otherwise `D=.claude/hermod/.local/graphify-out`. Check whether `$D/graph.json` exists. After a `git pull` from
+   another device, a committed graph may already be there; if code changed after the graph's last commit
+   (`git log -1 --format=%cd -- $D/graph.json`), rebuild before relying on it.
+2. If not, or after large changes, build it (code only):
    ```bash
-   GRAPHIFY_OUT=.claude/hermod/.local/graphify-out graphify extract . --code-only --no-viz
+   GRAPHIFY_OUT=$D graphify extract . --code-only --no-viz
    ```
-   Re-runs skip unchanged files, so a rebuild is cheap.
+   In PowerShell set the variable first: `$env:GRAPHIFY_OUT = ".claude/hermod/graph/graphify-out"` (or the `.local`
+   path). Re-runs skip unchanged files, so a rebuild is cheap. In a repository that commits its graph, commit the
+   rebuilt `graph.json` and report in the same pull request as the code change they describe. On a merge conflict in
+   them, rebuild; never merge the JSON by hand.
 3. Ask, with `--graph` pointing at that file:
    ```bash
-   G=.claude/hermod/.local/graphify-out/graph.json
+   G=$D/graph.json
    graphify query "how does login reach the database" --graph $G
    graphify explain "SessionStore" --graph $G
    graphify path "Router" "Database" --graph $G
-   graphify affected "parseConfig" --graph $G      # what breaks if this changes
-   graphify god-nodes --graph $G                   # the most connected hubs
+   graphify affected "parseConfig" --graph $G --depth 1   # what breaks if this changes; depth 2 can list 100+ lines
+   graphify god-nodes --graph $G                          # the most connected hubs
    ```
    `query`, `explain` and `path` exit 3 when a name is ambiguous (the candidates are listed) and 4 when nothing
    matches: pick a candidate or rephrase.

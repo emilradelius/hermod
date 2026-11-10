@@ -8,7 +8,7 @@ import { describe, expect, it } from "vitest";
 const ROOT = path.resolve(import.meta.dirname, "../..");
 const SHIPPED = [path.join(ROOT, "kit/files"), path.join(ROOT, "kit/seed")];
 /** Created at run time: the stamp by sync, the rest by the hooks and the curator. */
-const RUNTIME_PREFIXES = [".claude/hermod/VERSION.json", ".claude/hermod/.local/", ".claude/hermod/usage/", ".claude/hermod/archive/"];
+const RUNTIME_PREFIXES = [".claude/hermod/VERSION.json", ".claude/hermod/.local/", ".claude/hermod/graph/", ".claude/hermod/usage/", ".claude/hermod/archive/"];
 
 function markdownFiles(dir: string): string[] {
   const out: string[] = [];
@@ -50,7 +50,12 @@ describe("kit seed and references", () => {
     expect(existsSync(file)).toBe(true);
     const check = (await import(file)).default;
     expect(check.id).toBe("graphify-private");
-    for (const ex of check.examples) expect(check.run(ex.ctx).ok, ex.name).toBe(ex.expect);
+    for (const ex of check.examples) {
+      const files: Record<string, string> = ex.ctx.files ?? {};
+      const baseFiles: Record<string, string> = ex.ctx.baseFiles ?? {};
+      const ctx = { ...ex.ctx, base: "HEAD", read: (p: string) => files[p] ?? null, readAt: (_ref: string, p: string) => baseFiles[p] ?? null };
+      expect(check.run(ctx).ok, ex.name).toBe(ex.expect);
+    }
   });
 
   it("graphify is an optional skill, never core", () => {
@@ -58,7 +63,7 @@ describe("kit seed and references", () => {
     expect(optional).toContain("graphify");
     const text = readFileSync(path.join(ROOT, "kit/files/.claude/skills/graphify/SKILL.md"), "utf8");
     // the hard rules the skill must keep telling Claude
-    for (const needle of ["--code-only", "GRAPHIFY_OUT=.claude/hermod/.local/", "graphify install", "Never commit"]) {
+    for (const needle of ["--code-only", ".claude/hermod/.local/graphify-out", "ALLOW_COMMIT", "Never create `ALLOW_COMMIT` yourself", "graphify install"]) {
       expect(text, needle).toContain(needle);
     }
   });

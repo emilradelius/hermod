@@ -230,13 +230,17 @@ Graphify is a separate tool that turns code into a queryable graph (tree-sitter,
 mode). Hermod does not contain it and does not depend on it. `--skills graphify` installs a skill that tells Claude
 when to ask the graph instead of grepping, and how to do it safely:
 
-- The graph maps a repository, so it is written to `.claude/hermod/.local/graphify-out` (`GRAPHIFY_OUT`), which the
-  hooks keep out of git. The seeded check `graphify-private` fails a change that contains a `graphify-out*/` folder,
-  `GRAPH_REPORT.md`, `GRAPH_TREE.html` or `.graphify_*` files.
+- The graph maps a repository, so where it lives is a per-repository choice (Emil, 2026-11-10: it must follow him
+  between devices). Default, and always for a public repository: `.claude/hermod/.local/graphify-out`, which the
+  hooks keep out of git; another device rebuilds it. A person opts a **private** repository in by creating
+  `.claude/hermod/graph/ALLOW_COMMIT` (and a `.gitignore` there for `cache/` and `.graphify_*`); the graph is then
+  built into `.claude/hermod/graph/graphify-out` and committed. The seeded check `graphify-private` fails any graph
+  output in a change except `graph.json`, the report and `memory/` in that folder of an opted-in repository.
 - Always `--code-only`, never another model provider, and never `graphify install`, `graphify hook install` or
   `graphify uninstall` (they edit `CLAUDE.md`, settings and git hooks, which only sync may do).
 - The tool is installed by a person, pinned to a full commit of the private `graphify-kit` copy. Sync does not
   install it and runs no program except git. A repository that never chooses the skill never sees any of this,
-  except the seeded check, which does nothing when no graph file is in a change.
-- Not verified: graphify itself was not run in a live session; the skill's commands come from its `--help` text.
+  except the seeded check, which does nothing when no graph file is in a change. Another device or a cloud session
+  needs graphify installed (a setup step) before it can rebuild; a committed graph can be queried once it is.
+- Verified by a person on Windows (graphify 0.9.105, a real repository): build, `god-nodes`, `explain`, `affected`. Not yet run: `query`, `path`, and any use in a live Claude Code session.
 

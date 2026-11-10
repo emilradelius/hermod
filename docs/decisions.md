@@ -77,6 +77,13 @@ earlier one, change the old line to say "replaced by …" instead of deleting it
   several model providers).
 - 2026-11-10, Claude: the graph is written under `.claude/hermod/.local/` and a seeded check fails any change that
   contains graph output, because the graph maps a private repository and Hermod is public. Code-only, Anthropic only.
+  (Replaced by the next line for private repositories that opt in; public ones are unchanged.)
+
+- 2026-11-10, Emil ("pick up where I left off on any device"; chose "commit it in private repos"): the graph is
+  committed in private repositories that opt in (`.claude/hermod/graph/ALLOW_COMMIT`, folder
+  `.claude/hermod/graph/graphify-out`); a public repository, Hermod included, keeps it under `.local` and rebuilds.
+  The seeded check enforces this: the marker must already be in the base commit (its own reviewed change), and only
+  `graph.json`, `GRAPH_REPORT.md` and `memory/` may be committed.
 
 ## Repository setup
 - 2026-11-09, Emil ("merge them", on Claude's advice): PR #1 was squash-merged as `32589df`, so the branch's commit
