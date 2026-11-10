@@ -69,6 +69,13 @@ earlier one, change the old line to say "replaced by …" instead of deleting it
 - 2026-11-05, Claude: GitHub Actions are pinned to commit SHAs; npm uses `legacy-peer-deps` (npm 10 crashes on
   vitest's optional peers) and `ignore-scripts`, with better-sqlite3 rebuilt explicitly.
 
+- 2026-11-10, Emil ("yes, go ahead"): Graphify (Apache-2.0) is used as a separate tool, kept as an unmodified,
+  pinned copy in the private repository `graphify-kit`, and joined to Hermod by an optional skill, not merged
+  into the kit (the kit has zero dependencies and no network; graphify is Python with about 35 dependencies and
+  several model providers).
+- 2026-11-10, Claude: the graph is written under `.claude/hermod/.local/` and a seeded check fails any change that
+  contains graph output, because the graph maps a private repository and Hermod is public. Code-only, Anthropic only.
+
 ## Repository setup
 - 2026-11-09, Emil ("merge them", on Claude's advice): PR #1 was squash-merged as `32589df`, so the branch's commit
   messages that name the target repositories stay out of `main`'s history. The tag `v0.1.0` belongs on that commit.

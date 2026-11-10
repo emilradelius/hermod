@@ -23,6 +23,12 @@ not done or not verified, and one line per recent session. Each decision is one 
   all three, the runtime vendored into one app, and an agent plan for another, which waits for Emil's answers. This
   repository is public, so their names and details stay in their own progress logs.
 
+## Graphify (2026-11-10, draft PR)
+- An unmodified copy of Graphify (Apache-2.0, upstream `5eedffa`, 0.9.105) is in Emil's private repository
+  `graphify-kit`. Hermod joins it with the optional skill `graphify` (`--skills graphify`) and the seeded check
+  `graphify-private`; the graph lives under `.claude/hermod/.local/`. `docs/kit.md` section 10.
+- Not verified: graphify was not installed or run here; no live Claude Code session used the skill.
+
 ## Next step
 - Emil adds the tag `v0.1.0` on `32589df` on GitHub: Releases, Draft a new release, tag `v0.1.0`, target the commit
   `32589df`, Publish. The session that merged it was refused a tag push (HTTP 403; branch pushes work). Settle the
@@ -56,6 +62,7 @@ not done or not verified, and one line per recent session. Each decision is one 
   tooling (dev-time, no runtime exposure). Revisit when ESLint and typescript-eslint move past it.
 
 ## Recent sessions
+- 2026-11-10: Graphify joined as an optional skill and a seeded check (draft PR); the copy is in the private `graphify-kit`.
 - 2026-11-09: PR #1 squash-merged as `32589df` (0.1.0) on Emil's word, and the pull requests in the three targets
   too; each target pinned to `32589df` in a follow-up pull request. The tag could not be pushed (see Next step).
 - 2026-11-06: /reflect, on evidence gathered by hand: a check, `no-floating-versions` (no `@latest`/`@canary`,
