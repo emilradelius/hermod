@@ -52,7 +52,8 @@ describe("kit seed and references", () => {
     expect(check.id).toBe("graphify-private");
     for (const ex of check.examples) {
       const files: Record<string, string> = ex.ctx.files ?? {};
-      const ctx = { ...ex.ctx, read: (p: string) => files[p] ?? null };
+      const baseFiles: Record<string, string> = ex.ctx.baseFiles ?? {};
+      const ctx = { ...ex.ctx, base: "HEAD", read: (p: string) => files[p] ?? null, readAt: (_ref: string, p: string) => baseFiles[p] ?? null };
       expect(check.run(ctx).ok, ex.name).toBe(ex.expect);
     }
   });

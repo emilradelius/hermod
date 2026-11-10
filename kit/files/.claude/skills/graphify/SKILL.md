@@ -15,7 +15,10 @@ Code parsing is local: no model call, nothing leaves the machine.
    repository: `.claude/hermod/.local/graphify-out` (self-ignoring; it stays on the device and is rebuilt on
    another). In a **private** repository that a person has opted in, by creating `.claude/hermod/graph/ALLOW_COMMIT`,
    build into `.claude/hermod/graph/graphify-out` so the graph is committed and follows the person between devices.
-   Never create `ALLOW_COMMIT` yourself. Commit only `graph.json`, `GRAPH_REPORT.md` and `memory/` there, never
+   Never create `ALLOW_COMMIT` yourself; it counts only once it is already in the base commit, so it is its own pull
+   request that a person merges. Before opting a repository in, build once and search `graph.json` for the home
+   directory path and for backslashes: a graph that carries them differs per computer and must not be committed.
+   Commit only `graph.json`, `GRAPH_REPORT.md` and `memory/` there, never
    `cache/` or `.graphify_*` (a `.claude/hermod/graph/.gitignore` listing both makes that automatic). Never paste or
    upload the graph, and never write it anywhere else, in particular not the default `graphify-out/` in the
    repository root. A check in `.claude/hermod/checks/` fails a change that breaks this.
@@ -49,7 +52,8 @@ the person; do not fall back to the default `graphify-out/`.
 
 1. Pick the folder: `D=.claude/hermod/graph/graphify-out` if `.claude/hermod/graph/ALLOW_COMMIT` exists,
    otherwise `D=.claude/hermod/.local/graphify-out`. Check whether `$D/graph.json` exists. After a `git pull` from
-   another device, a committed graph may already be there.
+   another device, a committed graph may already be there; if code changed after the graph's last commit
+   (`git log -1 --format=%cd -- $D/graph.json`), rebuild before relying on it.
 2. If not, or after large changes, build it (code only):
    ```bash
    GRAPHIFY_OUT=$D graphify extract . --code-only --no-viz

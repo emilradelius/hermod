@@ -25,12 +25,14 @@ not done or not verified, and one line per recent session. Each decision is one 
 
 - **Graphify** (2026-11-10, PR #3, merged): an unmodified copy (Apache-2.0, upstream `5eedffa`, 0.9.105) is in Emil's
   private repository `graphify-kit`. The optional skill `graphify` (`--skills graphify`) and the seeded check
-  `graphify-private` join it to the kit; the graph lives under `.claude/hermod/.local/` by default, or is committed in private repositories that opt in
-  (`.claude/hermod/graph/ALLOW_COMMIT`) so it follows Emil between devices. `docs/kit.md` section 10.
+  `graphify-private` join it to the kit; the graph lives under `.claude/hermod/.local/` by default, or is committed
+  in private repositories that opt in (`.claude/hermod/graph/ALLOW_COMMIT`) so it follows Emil between devices. `docs/kit.md` section 10.
 
 ## Next step
-- Graphify (PR #3, merged): Emil installs it once (`uv tool install` from `graphify-kit` at a full sha) and runs the
-  skill's commands once by hand; fix the skill if one fails. Then tag a release and sync with `--skills graphify`.
+- Graphify (PRs #3 merged, #5 open): run `query` and `path` once; build a graph in one private repository and check
+  `graph.json` for the home path; merge `.claude/hermod/graph/ALLOW_COMMIT` there as its own pull request, then the
+  graph. Then tag a release and sync with `--skills graphify`. Emil's other-device and cloud-session setup (install
+  graphify there) is still to do.
 - A later kit or runtime change reaches the targets the way 0.1.0 did, each in its own pull request there:
   `node scripts/sync.mjs --target <repo> --ref <tag or full sha>` and
   `node scripts/vendor-runtime.mjs --target <app>/vendor/hermod --ref <tag or full sha>`.
