@@ -78,6 +78,11 @@ earlier one, change the old line to say "replaced by …" instead of deleting it
 - 2026-11-10, Claude: the graph is written under `.claude/hermod/.local/` and a seeded check fails any change that
   contains graph output, because the graph maps a private repository and Hermod is public. Code-only, Anthropic only.
 
+- 2026-11-10, Emil ("pick up where I left off on any device"; chose "commit it in private repos"): the graph is
+  committed in private repositories that opt in (`.claude/hermod/graph/ALLOW_COMMIT`, folder
+  `.claude/hermod/graph/graphify-out`); a public repository, Hermod included, keeps it under `.local` and rebuilds.
+  The seeded check enforces this. Replaces the 2026-11-10 line "the graph is written under `.local`" for opted-in repos.
+
 ## Repository setup
 - 2026-11-09, Emil ("merge them", on Claude's advice): PR #1 was squash-merged as `32589df`, so the branch's commit
   messages that name the target repositories stay out of `main`'s history. The tag `v0.1.0` belongs on that commit.

@@ -25,7 +25,8 @@ not done or not verified, and one line per recent session. Each decision is one 
 
 - **Graphify** (2026-11-10, PR #3, merged): an unmodified copy (Apache-2.0, upstream `5eedffa`, 0.9.105) is in Emil's
   private repository `graphify-kit`. The optional skill `graphify` (`--skills graphify`) and the seeded check
-  `graphify-private` join it to the kit; the graph lives under `.claude/hermod/.local/`. `docs/kit.md` section 10.
+  `graphify-private` join it to the kit; the graph lives under `.claude/hermod/.local/` by default, or is committed in private repositories that opt in
+  (`.claude/hermod/graph/ALLOW_COMMIT`) so it follows Emil between devices. `docs/kit.md` section 10.
 
 ## Next step
 - Graphify (PR #3, merged): Emil installs it once (`uv tool install` from `graphify-kit` at a full sha) and runs the
@@ -46,8 +47,8 @@ not done or not verified, and one line per recent session. Each decision is one 
   records only the command, its exit code and skill use would let such a repository turn it back on. Worth building?
 
 ## Not done / not verified
-- Graphify was never installed or run (installing its code was refused in the session); the skill's commands come
-  from its `--help` text, and no live Claude Code session used the skill.
+- Graphify: Emil ran the build, `god-nodes`, `explain` and `affected` on Windows (0.9.105) and they worked. `query`
+  and `path` are not run yet, and no live Claude Code session has used the skill.
 - No live API call was made: `npm run eval:live` needs `HERMOD_LIVE=1` and a key, and was not run. Every model call
   in the tests and evals is the fake client.
 - The hooks were tested as processes (vitest runs them with real stdin and git repositories), not in a live Claude
