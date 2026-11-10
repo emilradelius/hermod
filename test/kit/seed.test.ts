@@ -45,6 +45,24 @@ describe("kit seed and references", () => {
     }
   });
 
+  it("the seed ships the graphify-private check, and its examples pass", async () => {
+    const file = path.join(ROOT, "kit/seed/.claude/hermod/checks/graphify-private.mjs");
+    expect(existsSync(file)).toBe(true);
+    const check = (await import(file)).default;
+    expect(check.id).toBe("graphify-private");
+    for (const ex of check.examples) expect(check.run(ex.ctx).ok, ex.name).toBe(ex.expect);
+  });
+
+  it("graphify is an optional skill, never core", () => {
+    const optional = JSON.parse(readFileSync(path.join(ROOT, "kit/skills.json"), "utf8")).optional as string[];
+    expect(optional).toContain("graphify");
+    const text = readFileSync(path.join(ROOT, "kit/files/.claude/skills/graphify/SKILL.md"), "utf8");
+    // the hard rules the skill must keep telling Claude
+    for (const needle of ["--code-only", "GRAPHIFY_OUT=.claude/hermod/.local/", "graphify install", "Never commit"]) {
+      expect(text, needle).toContain(needle);
+    }
+  });
+
   it("the checks README shows the shape the runner validates", () => {
     const text = readFileSync(path.join(ROOT, "kit/seed/.claude/hermod/checks/README.md"), "utf8");
     for (const needle of ["export default", "id:", "description:", "level:", "run(ctx)", "examples:", "--self-test"]) {

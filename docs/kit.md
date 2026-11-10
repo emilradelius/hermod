@@ -176,7 +176,7 @@ Each only proposes or reports.
 
 - `--ref` is a tag or a 40-character SHA; branches, short SHAs and `HEAD` are refused. Files are read at that
   commit, never from the working tree.
-- It copies `kit/files/**` (all under `.claude/`). Seeds (`config.json`, `LESSONS.md`, `checks/README.md`) are created only if missing.
+- It copies `kit/files/**` (all under `.claude/`). Seeds (`config.json`, `LESSONS.md`, `checks/README.md`, `checks/graphify-private.mjs`) are created only if missing.
 - Stamp `.claude/hermod/VERSION.json`: `kit`, `ref`, `commit`, `syncedAt`, `skills`, a sha256 per file.
 - Conflicts: a file at a kit path that no sync wrote (even with `--force`); a kit file changed locally (unless
   `--force`). Dropped kit files are deleted only if unchanged. On a conflict nothing is written (exit 1).
@@ -223,3 +223,20 @@ libraries directly (`test/kit/kit-lib-tests-helpers.ts`). Rules:
 - Targets update only when a person runs sync. recall is keyword search, not semantic.
 - CI runs on Linux only. hermod's CI runs its own checks on the diff against `main`; a target's CI runs only what
   that repository adds (for example the validator).
+
+## 10. Graphify (optional skill)
+
+Graphify is a separate tool that turns code into a queryable graph (tree-sitter, local, no model call in code-only
+mode). Hermod does not contain it and does not depend on it. `--skills graphify` installs a skill that tells Claude
+when to ask the graph instead of grepping, and how to do it safely:
+
+- The graph maps a repository, so it is written to `.claude/hermod/.local/graphify-out` (`GRAPHIFY_OUT`), which the
+  hooks keep out of git. The seeded check `graphify-private` fails a change that contains a `graphify-out*/` folder,
+  `GRAPH_REPORT.md`, `GRAPH_TREE.html` or `.graphify_*` files.
+- Always `--code-only`, never another model provider, and never `graphify install`, `graphify hook install` or
+  `graphify uninstall` (they edit `CLAUDE.md`, settings and git hooks, which only sync may do).
+- The tool is installed by a person, pinned to a full commit of the private `graphify-kit` copy. Sync does not
+  install it and runs no program except git. A repository that never chooses the skill never sees any of this,
+  except the seeded check, which does nothing when no graph file is in a change.
+- Not verified: graphify itself was not run in a live session; the skill's commands come from its `--help` text.
+
