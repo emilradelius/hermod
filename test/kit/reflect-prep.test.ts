@@ -53,6 +53,12 @@ function bundleOf(repo: Repo, id = SESSION): string {
   return text ?? "";
 }
 
+/** Lets state travel: the marker committed, and origin/main (a local remote-tracking ref) pointing at it. */
+function optIn(repo: Repo): void {
+  repo.commit({ files: { ".claude/hermod/state/ALLOW_COMMIT": "private\n" }, message: "opt in" });
+  repo.git("update-ref", "refs/remotes/origin/main", "HEAD");
+}
+
 function baseRepo(): Repo {
   return makeRepo({
     files: {
@@ -201,10 +207,16 @@ describe("reflect-prep: the bundle", () => {
     const repo = baseRepo();
     startSession(repo);
     tool(repo, skill("reflect"));
+    const r = prep(repo, "--write-usage");
+    expect(r.code, r.stderr).toBe(0);
+    expect(r.stdout).toContain("No session summary written: no remote default branch");
+    // Nothing appears in git status: .local/ is ignored, and without the opt-in no summary is written.
+    const status = () => repo.git("status", "--porcelain", "--untracked-files=all").split("\n").filter(Boolean);
+    expect(status()).toEqual([]);
+    optIn(repo);
     expect(prep(repo, "--write-usage").code).toBe(0);
-    // Only the usage file appears in git status (the .local folder is ignored).
-    const status = repo.git("status", "--porcelain", "--untracked-files=all").split("\n").filter(Boolean);
-    expect(status.map((l) => l.slice(3))).toEqual([expect.stringMatching(/^\.claude\/hermod\/usage\/\d{4}-\d{2}-\d{2}-0f3c2a1b\.json$/)]);
+    // Opted in: only the session summary appears.
+    expect(status().map((l) => l.slice(3))).toEqual([expect.stringMatching(/^\.claude\/hermod\/state\/sessions\/\d{4}-\d{2}-\d{2}-0f3c2a1b\.json$/)]);
   });
 });
 
@@ -228,15 +240,16 @@ describe("reflect-prep: hostile input", () => {
     expect(existsSync(path.join(repo.root, "..", "..", "evil id.md"))).toBe(false);
   });
 
-  it.skipIf(process.platform === "win32")("refuses a usage folder that is a symlink out of the repository", () => {
+  it.skipIf(process.platform === "win32")("refuses a sessions folder that is a symlink out of the repository", () => {
     const repo = baseRepo();
     startSession(repo);
     tool(repo, skill("reflect"));
+    optIn(repo);
     const outside = tempDir("hermod-outside-");
-    symlinkSync(outside, repo.abs(".claude/hermod/usage"));
+    symlinkSync(outside, repo.abs(".claude/hermod/state/sessions"));
     const r = prep(repo, "--write-usage");
-    expect(r.code).toBe(1);
-    expect(r.stderr).toMatch(/outside the repository/);
+    expect(r.code, r.stderr).toBe(0);
+    expect(r.stdout).toMatch(/No session summary written: .*leads outside the repository/);
     expect(readdirSync(outside)).toEqual([]);
   });
 });
@@ -290,30 +303,89 @@ describe("reflect-prep: --write-usage", () => {
     tool(repo, { hook_event_name: "PostToolUse", tool_name: "Read", tool_input: { file_path: repo.abs(".claude/skills/nothere/SKILL.md") } });
     tool(repo, skill("curate"), "another-session");
 
+    optIn(repo);
     const r = prep(repo, "--write-usage");
     expect(r.code, r.stderr).toBe(0);
-    const dir = repo.abs(".claude/hermod/usage");
+    const dir = repo.abs(".claude/hermod/state/sessions");
     const files = readdirSync(dir);
     expect(files).toHaveLength(1);
     const name = files[0] ?? "";
     const startedAt = (JSON.parse(repo.read(`.claude/hermod/.local/sessions/${SESSION}/session-start.json`) ?? "{}") as { startedAt: string }).startedAt;
     expect(name).toBe(`${startedAt.slice(0, 10)}-0f3c2a1b.json`);
-    const usage = JSON.parse(readFileSync(path.join(dir, name), "utf8")) as unknown;
-    expect(usage).toEqual({
+    const summary = JSON.parse(readFileSync(path.join(dir, name), "utf8")) as unknown;
+    expect(summary).toEqual({
+      v: 1,
       session: SESSION,
       date: startedAt.slice(0, 10),
+      branch: "main",
       skills: { curate: { uses: 1, views: 0 }, reflect: { uses: 2, views: 1 } },
+      commands: [],
     });
-    expect(r.stdout).toContain(`.claude/hermod/usage/${name}`);
+    expect(r.stdout).toContain(`.claude/hermod/state/sessions/${name}`);
+    expect(existsSync(repo.abs(".claude/hermod/usage"))).toBe(false);
   });
 
-  it("writes no usage file without --write-usage, and an empty skills map when nothing was used", () => {
+  it("writes no summary without --write-usage, and empty skills and commands when nothing was used", () => {
     const repo = baseRepo();
     startSession(repo);
+    optIn(repo);
     expect(prep(repo).code).toBe(0);
-    expect(existsSync(repo.abs(".claude/hermod/usage"))).toBe(false);
+    expect(existsSync(repo.abs(".claude/hermod/state/sessions"))).toBe(false);
     expect(prep(repo, "--write-usage").code).toBe(0);
-    const [name] = readdirSync(repo.abs(".claude/hermod/usage"));
-    expect((JSON.parse(readFileSync(repo.abs(`.claude/hermod/usage/${name}`), "utf8")) as { skills: unknown }).skills).toEqual({});
+    const [name] = readdirSync(repo.abs(".claude/hermod/state/sessions"));
+    const s = JSON.parse(readFileSync(repo.abs(`.claude/hermod/state/sessions/${name}`), "utf8")) as { skills: unknown; commands: unknown };
+    expect(s.skills).toEqual({});
+    expect(s.commands).toEqual([]);
+  });
+
+  it("keeps a failed command only as its plain-word key: never its text or output", () => {
+    const repo = baseRepo();
+    startSession(repo);
+    optIn(repo);
+    const token = ["ghp", "d".repeat(36)].join("_");
+    tool(repo, bashFail(`npm run build -- --token ${token} "my private note"`, `Error: build failed for Emil at emil@example.com ${token}`));
+    tool(repo, bashFail("npm run build", "Error: still failing"));
+    tool(repo, bashOk("npm run build"));
+    tool(repo, bashFail('echo "dear diary" my plans', "nope"));
+    const r = prep(repo, "--write-usage");
+    expect(r.code, r.stderr).toBe(0);
+    const [name] = readdirSync(repo.abs(".claude/hermod/state/sessions"));
+    const text = readFileSync(repo.abs(`.claude/hermod/state/sessions/${name}`), "utf8");
+    expect(JSON.parse(text).commands).toEqual([
+      { key: "npm run build", exit: null, attempts: 2, resolved: true },
+      { key: "echo …", exit: null, attempts: 1, resolved: false },
+    ]);
+    for (const leak of [token, "private note", "Emil", "emil@example.com", "diary", "plans", "Error"]) expect(text).not.toContain(leak);
+  });
+
+  it("writes nothing while the marker is only in the working tree, and says why", () => {
+    const repo = baseRepo();
+    startSession(repo);
+    repo.git("update-ref", "refs/remotes/origin/main", "HEAD");
+    repo.write(".claude/hermod/state/ALLOW_COMMIT", "private\n");
+    const r = prep(repo, "--write-usage");
+    expect(r.code, r.stderr).toBe(0);
+    expect(r.stdout).toContain("is not on origin/main yet");
+    expect(existsSync(repo.abs(".claude/hermod/state/sessions"))).toBe(false);
+  });
+
+  it("lists earlier sessions on this branch from their summaries, from any device", () => {
+    const repo = baseRepo();
+    startSession(repo);
+    optIn(repo);
+    const other = "1a2b3c4d-1111-4222-8333-444455556666";
+    repo.write(
+      ".claude/hermod/state/sessions/2026-11-01-1a2b3c4d.json",
+      JSON.stringify({ v: 1, session: other, date: "2026-11-01", branch: "main", skills: { curate: { uses: 1, views: 0 } }, commands: [{ key: "npm run lint", exit: 1, attempts: 3, resolved: true }] }),
+    );
+    repo.write(
+      ".claude/hermod/state/sessions/2026-11-02-2b3c4d5e.json",
+      JSON.stringify({ v: 1, session: "2b3c4d5e-1111-4222-8333-444455556666", date: "2026-11-02", branch: "other", skills: {}, commands: [{ key: "npm test", exit: 1, attempts: 1, resolved: false }] }),
+    );
+    expect(prep(repo).code).toBe(0);
+    const b = bundleOf(repo);
+    expect(b).toContain("### Earlier sessions on this branch");
+    expect(b).toContain("2026-11-01 1a2b3c4d: failed: `npm run lint` (exit 1, 3×, resolved); skills: curate");
+    expect(b).not.toContain("npm test");
   });
 });

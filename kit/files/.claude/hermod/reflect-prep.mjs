@@ -13,8 +13,11 @@
  *   4. The user's messages from the session transcript (last 40, each at most 400 characters).
  *   5. The current lessons, skills index with sizes, checks and the validator's result.
  *   6. A footer: proposals only.
- * --write-usage also writes `.claude/hermod/usage/<YYYY-MM-DD>-<first 8 chars of the session id>.json` with this
- * session's skill uses and views (only skills that exist in the skills folder); /reflect commits that file.
+ * --write-usage also writes this session's summary, `.claude/hermod/state/sessions/<YYYY-MM-DD>-<id8>.json`
+ * (skill uses and views of skills that exist in the skills folder, and each failed command as its plain-word key,
+ * exit code, attempts and whether it was resolved; lib/travel.mjs), but only in a repository that lets state travel
+ * (.claude/hermod/state/ALLOW_COMMIT on the remote default branch). Elsewhere it writes nothing and says why.
+ * /reflect commits the file with the session's work, so it follows the person to their other devices.
  *
  * It never changes the lessons, skills, checks or settings, and makes no network calls.
  */
@@ -37,11 +40,11 @@ import {
 } from "./lib/io.mjs";
 import { readLedger } from "./lib/ledger.mjs";
 import { parseLessons, lessonsStats } from "./lib/lessons.mjs";
-import { relativeToRoot } from "./lib/paths.mjs";
 import { redact } from "./lib/redact.mjs";
 import { listSkills, readSkill, indexLine } from "./lib/skills.mjs";
 import { readSessionStart, sanitizeSessionId, sessionsDir } from "./lib/state.mjs";
 import { readUserMessages } from "./lib/transcript.mjs";
+import { readSessionSummaries, writeSessionSummary } from "./lib/travel.mjs";
 import { sessionChanges } from "./hooks/stop.mjs";
 import { validateRepo } from "./validate.mjs";
 
@@ -52,7 +55,9 @@ a short summary: the session's commits and changed files, failed commands and wh
 messages, and the current lessons, skills and checks. Everything in it is redacted.
 
   --session ID   the session (default: the most recent one in .claude/hermod/.local/sessions/)
-  --write-usage  also write .claude/hermod/usage/<date>-<id>.json (skill uses and views; /reflect commits it)
+  --write-usage  also write this session's summary to .claude/hermod/state/sessions/ (skill use and failed
+                 commands as plain-word keys; never output), only when .claude/hermod/state/ALLOW_COMMIT is on
+                 the remote default branch; /reflect commits it
   --root DIR     the repository root (default: $CLAUDE_PROJECT_DIR, else the git top level of this folder)
   --json         print the summary as JSON
   --help         show this help
@@ -67,6 +72,8 @@ export const SECTION_BUDGETS = Object.freeze({ session: 1500, git: 7000, ledger:
 const MAX_COMMITS = 100;
 const MAX_CHANGED_LISTED = 60;
 const MAX_FAILURES_LISTED = 30;
+/** At most this many earlier sessions on the branch are listed. */
+const MAX_OTHER_SESSIONS = 8;
 const FAILURE_TAIL_CHARS = 600;
 const MAX_MESSAGES = 40;
 const MESSAGE_CHARS = 400;
@@ -80,7 +87,8 @@ const CUT_MARKER_START = "[… earlier part cut to fit the bundle]\n";
  * @property {string} bundle path of the bundle, relative to the root (posix)
  * @property {number} bytes
  * @property {{ commits: number, changedFiles: number, failures: number, resolved: number, userMessages: number, skillEvents: number }} counts
- * @property {string | null} usage path of the usage file, relative to the root, when written
+ * @property {string | null} usage path of the session summary, relative to the root, when written
+ * @property {string | null} usageWhy why the summary was or was not written (null without --write-usage)
  * @property {Record<string, { uses: number, views: number }>} skills skill use counted for the usage file
  */
 
@@ -207,7 +215,7 @@ function gitSection(root, start) {
  * @param {Array<Record<string, unknown>>} entries this session's ledger entries
  * @returns {{ text: string, failures: number, resolved: number, skillEvents: number }}
  */
-function ledgerSection(entries) {
+function ledgerSection(entries, others = []) {
   const fails = entries.filter((e) => e.type === "fail");
   const resolutions = entries.filter((e) => e.type === "resolved");
   const skillEvents = entries.filter((e) => e.type === "skill" || e.type === "skill-view");
@@ -223,7 +231,8 @@ function ledgerSection(entries) {
     const exit = typeof f.exit === "number" ? `exit ${f.exit}` : "exit unknown";
     const status = r ? `resolved by ${r.id}` : "not resolved in the ledger";
     out.push(`- ${f.id} · ${code(String(f.key ?? ""))} · ${exit} · ${status}`);
-    out.push(`  command: ${code(truncateChars(String(f.cmd ?? ""), 300))}`);
+    // Summary mode (ledger.mode "summary") keeps no command text or output.
+    if (typeof f.cmd === "string" && f.cmd !== "") out.push(`  command: ${code(truncateChars(f.cmd, 300))}`);
     const tail = truncateTail(String(f.out ?? "").trimEnd(), FAILURE_TAIL_CHARS, { marker: "…\n" });
     if (tail.trim() !== "") out.push("", indented(tail), "");
   }
@@ -234,8 +243,11 @@ function ledgerSection(entries) {
     const files = Array.isArray(r.changedFiles) ? r.changedFiles.map(String) : [];
     const more = typeof r.moreChangedFiles === "number" ? ` and ${r.moreChangedFiles} more` : "";
     const attempts = typeof r.attempts === "number" && r.attempts > 1 ? ` after ${r.attempts} failures` : "";
-    out.push(`- ${r.id} resolves ${r.failureId}${attempts}: ${code(truncateChars(String(r.cmd ?? ""), 300))}`);
-    out.push(`  changed since the failure: ${files.length > 0 ? files.join(", ") + more : "no file changes seen"}`);
+    const cmd = typeof r.cmd === "string" && r.cmd !== "" ? `: ${code(truncateChars(r.cmd, 300))}` : ` (${code(String(r.key ?? ""))})`;
+    out.push(`- ${r.id} resolves ${r.failureId}${attempts}${cmd}`);
+    if (Array.isArray(r.changedFiles)) {
+      out.push(`  changed since the failure: ${files.length > 0 ? files.join(", ") + more : "no file changes seen"}`);
+    }
   }
   if (resolutions.length > MAX_FAILURES_LISTED) out.push(`- (${resolutions.length - MAX_FAILURES_LISTED} earlier resolutions left out)`);
   /** @type {Map<string, { uses: number, views: number }>} */
@@ -251,6 +263,16 @@ function ledgerSection(entries) {
   if (counts.size === 0) out.push("- none recorded");
   for (const [name, c] of [...counts].sort((a, b) => (a[0] < b[0] ? -1 : 1))) {
     out.push(`- ${name}: ${c.uses} ${c.uses === 1 ? "use" : "uses"}, ${c.views} ${c.views === 1 ? "view" : "views"}`);
+  }
+  if (others.length > 0) {
+    out.push("", `### Earlier sessions on this branch (from .claude/hermod/state/sessions/, any device; newest first)`);
+    for (const s of others.slice(-MAX_OTHER_SESSIONS).reverse()) {
+      const failed = s.commands.map((c) => `${code(c.key)} (exit ${c.exit ?? "unknown"}, ${c.attempts}×${c.resolved ? ", resolved" : ""})`);
+      const skills = Object.keys(s.skills);
+      out.push(
+        `- ${s.date} ${s.session.slice(0, 8)}: ${failed.length > 0 ? `failed: ${truncateChars(failed.join(", "), 300)}` : "no failed commands"}${skills.length > 0 ? `; skills: ${skills.join(", ")}` : ""}`,
+      );
+    }
   }
   return { text: out.join("\n"), failures: fails.length, resolved: resolutions.length, skillEvents: skillEvents.length };
 }
@@ -399,7 +421,13 @@ export function buildBundle(root, sessionId) {
   const start = readSessionStart(root, sessionId);
   const entries = readLedger(root, { session: sessionId });
   const git = gitSection(root, start);
-  const ledger = ledgerSection(entries);
+  const current = branch(root);
+  const others = current
+    ? readSessionSummaries(root)
+        .summaries.map((f) => f.summary)
+        .filter((s) => s.branch === current && s.session !== sessionId)
+    : [];
+  const ledger = ledgerSection(entries, others);
   const messages = messagesSection(start, extraPatterns);
   const text = assembleBundle(
     `Reflect evidence: session ${sessionId}`,
@@ -450,28 +478,7 @@ export function skillUsage(root, config, entries) {
 }
 
 /**
- * Writes the usage file and returns its path relative to the root. Refuses a usage folder that leads outside
- * the repository.
- * @param {string} root
- * @param {string} sessionId
- * @param {string} date YYYY-MM-DD
- * @param {Record<string, { uses: number, views: number }>} skills
- * @returns {string}
- */
-export function writeUsage(root, sessionId, date, skills) {
-  const dir = hermodPath(root, "usage");
-  fs.mkdirSync(dir, { recursive: true });
-  const real = fs.realpathSync.native(dir);
-  if (relativeToRoot(root, real) === null) throw new Error(`refusing to write outside the repository: ${dir} leads to ${real}`);
-  const short = sanitizeSessionId(sessionId).slice(0, 8).replace(/[._-]+$/, "") || "session";
-  const file = path.join(dir, `${date}-${short}.json`);
-  const body = { session: redact(sessionId), date, skills };
-  writeFileAtomic(file, `${JSON.stringify(body, null, 2)}\n`);
-  return path.relative(root, file).split(path.sep).join("/");
-}
-
-/**
- * Builds and writes the bundle (and, with writeUsage, the usage file).
+ * Builds and writes the bundle (and, with writeUsage, the session summary when state may travel).
  * @param {string} root
  * @param {{ session?: string | null, writeUsage?: boolean, now?: Date }} [options]
  * @returns {PrepSummary}
@@ -486,11 +493,14 @@ export function prepare(root, options = {}) {
   writeFileAtomic(file, built.text);
   const skills = skillUsage(root, config, built.entries);
   let usage = null;
+  let usageWhy = null;
   if (options.writeUsage) {
     const start = readSessionStart(root, sessionId);
     const started = start?.startedAt && /^\d{4}-\d{2}-\d{2}/.test(start.startedAt) ? start.startedAt.slice(0, 10) : null;
     const date = started ?? (options.now ?? new Date()).toISOString().slice(0, 10);
-    usage = writeUsage(root, sessionId, date, skills);
+    const result = writeSessionSummary(root, sessionId, { date, entries: built.entries, skillNames: new Set(Object.keys(skills)) });
+    usage = result.file;
+    usageWhy = result.why;
   }
   return {
     session: sessionId,
@@ -498,6 +508,7 @@ export function prepare(root, options = {}) {
     bytes: Buffer.byteLength(built.text),
     counts: built.counts,
     usage,
+    usageWhy,
     skills,
   };
 }
@@ -519,7 +530,8 @@ export function formatSummary(s) {
     `Wrote ${s.bundle} (${(s.bytes / 1024).toFixed(1)} KB) for session ${s.session}.`,
     `${n(c.commits, "commit")}, ${n(c.changedFiles, "changed file")}, ${n(c.failures, "failed command")} (${c.resolved} resolved), ${n(c.userMessages, "user message")}, ${n(c.skillEvents, "skill event")}.`,
   ];
-  if (s.usage) lines.push(`Wrote ${s.usage} (${Object.keys(s.skills).length} skills).`);
+  if (s.usage) lines.push(`Wrote ${s.usage} (${Object.keys(s.skills).length} skills). Commit it with the session's work.`);
+  else if (s.usageWhy) lines.push(`No session summary written: ${s.usageWhy}.`);
   lines.push("Read the bundle, then follow .claude/skills/reflect/SKILL.md. Proposals only; a person merges.");
   return `${lines.join("\n")}\n`;
 }

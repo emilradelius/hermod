@@ -49,6 +49,20 @@ earlier one, change the old line to say "replaced by …" instead of deleting it
   for multi-step agentic work), `low` for background work. `src/model/models.ts`.
 
 ## How the kit works (Claude, within the plan)
+- 2026-11-10, Emil (approved the design: "I approve everything"): Hermod's state follows a person between devices only in a
+  private repository that opts in with `.claude/hermod/state/ALLOW_COMMIT`, which counts only on the remote default
+  branch (so it takes effect when a person merges it). What travels is one summary per session (skill use; failed
+  commands as plain-word keys, exit code, attempts, resolved; never command text, output or file names); the seeded
+  check `hermod-state` enforces it, and sync never ships a marker. `docs/kit.md` section 11.
+- 2026-11-10, Emil (the open question on the ledger): the ledger gets `ledger.mode: "summary"` (keys and exit codes
+  only, no snapshot, no git), so a repository whose command output can hold personal text can turn it back on.
+- 2026-11-10, Claude: a summary key keeps the program, the next words only for tools with subcommands (git, npm,
+  node …) or as flags and paths, and turns everything else into `…`, because a plain word cannot tell a subcommand
+  from prose. A session id must be a UUID. `usage/` is no longer written; old files are still read.
+- 2026-11-10, Claude: every brief shows the newest branch ahead of HEAD with its last commit and Next step (where
+  the person left off on another device), as data from an unmerged branch: redacted, injection-scanned, at most
+  700 characters (`brief.otherBranches`). The Stop hook asks once, in an opted-in repository, to write the
+  summary, commit and push (`ritual.travel`); push status comes from local refs, the kit never fetches.
 - 2026-11-06, Claude: library skills (`anthropic-sdk`, `nextjs-16`, `supabase-rls`) are opt-in per repository
   (`sync --skills`, recorded in the stamp; a re-sync keeps the choice); `reflect` and `curate` are always installed.
 - 2026-11-06, Claude: the Stop hook runs the checks whenever files changed (each check's `when` list decides),

@@ -3,8 +3,10 @@
  * Skill usage for the curator: how often each skill was used (the Skill tool) and viewed (its SKILL.md was read),
  * and the last day it was.
  *
- * Two sources, read only (this module never writes):
- * - `.claude/hermod/usage/*.json`, committed by /reflect, one file per session:
+ * Three sources, read only (this module never writes):
+ * - `.claude/hermod/state/sessions/*.json`, one summary per session from every device (lib/travel.mjs), in a
+ *   repository that lets state travel; files that break the summary rules are skipped and listed as invalid;
+ * - `.claude/hermod/usage/*.json`, the older usage files (no longer written), one file per session:
  *   `{ "session": "<id>", "date": "<YYYY-MM-DD>", "skills": { "<name>": { "uses": n, "views": n } } }`
  * - the local ledger (`.claude/hermod/.local/ledger.jsonl` and its rotated file), entries
  *   `{ ts, session, type: "skill" | "skill-view", skill }`. Sessions that already have a usage file are skipped
@@ -16,6 +18,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { hermodPath, isPlainObject, readText } from "./io.mjs";
 import { readLedger } from "./ledger.mjs";
+import { readSessionSummaries } from "./travel.mjs";
 
 /** The usage folder, relative to the root. */
 export const USAGE_DIR = ".claude/hermod/usage";
@@ -162,6 +165,27 @@ export function collectUsage(root, options = {}) {
   /** @type {Set<string>} */
   const coveredSessions = new Set();
   let files = 0;
+  /**
+   * @param {string | null} session
+   * @param {string} date
+   * @param {Iterable<[string, { uses: number, views: number }]>} counts
+   */
+  const add = (session, date, counts) => {
+    files++;
+    if (session !== null) coveredSessions.add(session);
+    for (const [skill, c] of counts) {
+      const u = entryFor(skills, skill);
+      u.uses += c.uses;
+      u.views += c.views;
+      if (c.uses + c.views > 0) {
+        u.sessions++;
+        u.lastUsed = laterDate(u.lastUsed, date);
+      }
+    }
+  };
+  const travelling = readSessionSummaries(root);
+  invalidFiles.push(...travelling.invalid);
+  for (const { summary } of travelling.summaries) add(summary.session, summary.date, Object.entries(summary.skills));
   const dir = hermodPath(root, "usage");
   for (const name of usageFileNames(root)) {
     const rel = `${USAGE_DIR}/${name}`;
@@ -183,17 +207,9 @@ export function collectUsage(root, options = {}) {
       invalidFiles.push(rel);
       continue;
     }
-    files++;
-    if (parsed.session !== null) coveredSessions.add(parsed.session);
-    for (const [skill, c] of parsed.skills) {
-      const u = entryFor(skills, skill);
-      u.uses += c.uses;
-      u.views += c.views;
-      if (c.uses + c.views > 0) {
-        u.sessions++;
-        u.lastUsed = laterDate(u.lastUsed, parsed.date);
-      }
-    }
+    // A session with a summary is counted once, from the summary.
+    if (parsed.session !== null && coveredSessions.has(parsed.session)) continue;
+    add(parsed.session, parsed.date, parsed.skills);
   }
 
   let ledgerEvents = 0;

@@ -42,6 +42,7 @@ export const DEFAULTS = deepFreeze({
     includeSkills: true,
     includeGit: true,
     maxBranches: 6,
+    otherBranches: 1,
     extra: [],
   },
   lessons: { file: ".claude/hermod/LESSONS.md", capChars: 4000, maxEntryChars: 400 },
@@ -55,8 +56,9 @@ export const DEFAULTS = deepFreeze({
     runChecks: true,
     validateKnowledge: true,
     maxBlocksPerSession: 2,
+    travel: true,
   },
-  ledger: { enabled: true, maxOutputChars: 2000, maxFileBytes: 2000000, extraRedactPatterns: [] },
+  ledger: { enabled: true, mode: /** @type {"full" | "summary"} */ ("full"), maxOutputChars: 2000, maxFileBytes: 2000000, extraRedactPatterns: [] },
   recall: {
     sources: ["docs/PROGRESS.md", "docs/progress-archive/**/*.md", "docs/decisions.md", ".claude/hermod/history/**/*.md"],
     git: true,
@@ -93,6 +95,7 @@ export const DEFAULTS = deepFreeze({
  *   | { type: "int", min: number, max: number }
  *   | { type: "number", min: number, max: number }
  *   | { type: "bool" }
+ *   | { type: "enum", values: readonly string[] }
  *   | { type: "path" }
  *   | { type: "patterns" }
  *   | { type: "strings" }
@@ -135,6 +138,7 @@ const SCHEMA = {
         includeSkills: bool,
         includeGit: bool,
         maxBranches: int(0, 50),
+        otherBranches: int(0, 3),
         extra: { type: "extra" },
       },
     },
@@ -151,12 +155,14 @@ const SCHEMA = {
         runChecks: bool,
         validateKnowledge: bool,
         maxBlocksPerSession: int(1, 5),
+        travel: bool,
       },
     },
     ledger: {
       type: "object",
       keys: {
         enabled: bool,
+        mode: { type: "enum", values: ["full", "summary"] },
         maxOutputChars: int(200, 20000),
         maxFileBytes: int(10000, 100000000),
         extraRedactPatterns: { type: "regexes" },
@@ -298,6 +304,10 @@ function check(schema, value, def, key, report) {
       return value;
     case "bool":
       return typeof value === "boolean" ? value : bad("must be true or false");
+    case "enum":
+      return typeof value === "string" && schema.values.includes(value)
+        ? value
+        : bad(`must be one of ${schema.values.map((v) => JSON.stringify(v)).join(", ")}`);
     case "version":
       if (value !== 1) {
         report.errors.push(`version must be 1 (this kit reads config version 1; got ${shown(value)}).`);

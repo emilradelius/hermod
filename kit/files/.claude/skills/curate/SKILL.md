@@ -29,6 +29,7 @@ The curator script only reports. You propose; a person merges. Nothing is delete
 ## Rules
 
 - Pinned skills (`curator.pinned` in `.claude/hermod/config.json`) are never archived.
-- Usage comes from `.claude/hermod/usage/*.json`, which `/reflect` writes per session. A skill with no usage data is
+- Usage comes from `.claude/hermod/state/sessions/*.json` (one summary per session from every device, in a repository
+  that lets state travel), older `.claude/hermod/usage/*.json` files and the local ledger. A skill with no usage data is
   measured from the day it was added.
 - Never delete a skill, the lessons file or any history. Archive instead.

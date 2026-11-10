@@ -585,6 +585,9 @@ function reservedPathReason(lower) {
     return "is a settings file (sync only merges hook entries into .claude/settings.json)";
   }
   if (lower.startsWith(LOCAL_DIR)) return "is under .claude/hermod/.local/ (local session data)";
+  // Opting in is a person's decision: sync never writes a marker or travelling state, whatever a release holds.
+  if (name === "allow_commit") return "is an opt-in marker (ALLOW_COMMIT), which only a person creates";
+  if (lower.startsWith(".claude/hermod/state/")) return "is under .claude/hermod/state/ (the repository's own travelling state)";
   return null;
 }
 

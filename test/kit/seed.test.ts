@@ -8,7 +8,7 @@ import { describe, expect, it } from "vitest";
 const ROOT = path.resolve(import.meta.dirname, "../..");
 const SHIPPED = [path.join(ROOT, "kit/files"), path.join(ROOT, "kit/seed")];
 /** Created at run time: the stamp by sync, the rest by the hooks and the curator. */
-const RUNTIME_PREFIXES = [".claude/hermod/VERSION.json", ".claude/hermod/.local/", ".claude/hermod/graph/", ".claude/hermod/usage/", ".claude/hermod/archive/"];
+const RUNTIME_PREFIXES = [".claude/hermod/VERSION.json", ".claude/hermod/.local/", ".claude/hermod/graph/", ".claude/hermod/state/", ".claude/hermod/usage/", ".claude/hermod/archive/"];
 
 function markdownFiles(dir: string): string[] {
   const out: string[] = [];
@@ -34,6 +34,16 @@ function referencedPaths(): Map<string, string> {
   return refs;
 }
 
+function walk(dir: string): string[] {
+  const out: string[] = [];
+  for (const name of readdirSync(dir)) {
+    const full = path.join(dir, name);
+    if (statSync(full).isDirectory()) out.push(...walk(full));
+    else out.push(path.relative(ROOT, full));
+  }
+  return out;
+}
+
 function shipped(ref: string): boolean {
   return SHIPPED.some((dir) => existsSync(path.join(dir, ref)) && (ref.endsWith("/") ? readdirSync(path.join(dir, ref)).length > 0 : true));
 }
@@ -56,6 +66,22 @@ describe("kit seed and references", () => {
       const ctx = { ...ex.ctx, base: "HEAD", read: (p: string) => files[p] ?? null, readAt: (_ref: string, p: string) => baseFiles[p] ?? null };
       expect(check.run(ctx).ok, ex.name).toBe(ex.expect);
     }
+  });
+
+  it("the seed ships the hermod-state check, and its examples pass", async () => {
+    const file = path.join(ROOT, "kit/seed/.claude/hermod/checks/hermod-state.mjs");
+    const check = (await import(file)).default;
+    expect(check.id).toBe("hermod-state");
+    expect(check.level).toBe("error");
+    expect(check.examples.length).toBeGreaterThanOrEqual(6);
+    for (const ex of check.examples) {
+      const files: Record<string, string> = ex.ctx.files ?? {};
+      const baseFiles: Record<string, string> = ex.ctx.baseFiles ?? {};
+      const ctx = { ...ex.ctx, base: "HEAD", read: (p: string) => files[p] ?? null, readAt: (_ref: string, p: string) => baseFiles[p] ?? null, git: () => ({ ok: false, stdout: "" }) };
+      expect(check.run(ctx).ok, ex.name).toBe(ex.expect);
+    }
+    // the kit never ships an opt-in marker
+    for (const dir of SHIPPED) expect(JSON.stringify(walk(dir)), dir).not.toMatch(/ALLOW_COMMIT/i);
   });
 
   it("graphify is an optional skill, never core", () => {

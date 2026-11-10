@@ -4,8 +4,8 @@ Short on purpose, so a new session can read it whole: the current status, the ne
 not done or not verified, and one line per recent session. Each decision is one line in `docs/decisions.md`.
 
 ## Status (2026-11-10)
-- **0.1.0 is released**: PR #1, squash commit `32589df` (2026-11-09), tagged `v0.1.0` by Emil on GitHub
-  (2026-11-10).
+- **Releases**: 0.1.0 (`32589df`, tagged `v0.1.0`) and 0.2.0 (`8df3d2f`, tagged `v0.2.0`: the optional graphify
+  skill). 0.3.0 is the state-travel branch (below).
 - **Part A, the kit, is built**: session brief, lessons and skills with a validator,
   the Stop ritual check, the session ledger, `/reflect` and its evidence bundle, lessons as checks, recall (BM25),
   the curator, and the pinned sync with opt-in library skills. 795 kit tests. `docs/kit.md`.
@@ -14,10 +14,8 @@ not done or not verified, and one line per recent session. Each decision is one 
   the invariant suites and the eval harness. `docs/runtime.md`.
 - **Three rounds of independent attacks** on the guards (taint, memory writes, side effects, costs, modes): every
   finding is fixed with mutation-checked tests.
-- **Reviews:** `/code-review` (max) found 14 problems, all fixed (job leases, unpriced costs, the redaction default,
-  backoff, compression in a tool loop, skill patch races, the curator writing on its own, stray files in a vendored
-  build, multi-line imports, floating CI versions, `.env.example`, two speed-ups, a duplicate helper), and an
-  independent verifier re-checked the runtime fixes. `/security-review`: no high-confidence vulnerabilities.
+- **Reviews (0.1.0):** `/code-review` (max) found 14 problems, all fixed, and an independent verifier re-checked the
+  runtime fixes. `/security-review`: no high-confidence vulnerabilities.
 - Whole suite with Postgres: 93 files, 2,599 tests; evals 19/19; CI green.
 - **Installed and merged** in Emil's three target repositories (2026-11-09), each pinned to `32589df`: the kit in
   all three, the runtime vendored into one app, and an agent plan for another, which waits for Emil's answers. This
@@ -27,9 +25,16 @@ not done or not verified, and one line per recent session. Each decision is one 
   private repository `graphify-kit`. The optional skill `graphify` (`--skills graphify`) and the seeded check
   `graphify-private` join it to the kit; the graph lives under `.claude/hermod/.local/` by default, or is committed
   in private repositories that opt in (`.claude/hermod/graph/ALLOW_COMMIT`) so it follows Emil between devices. `docs/kit.md` section 10.
+- **State that follows you** (0.3.0, design approved by Emil): a private repository opts in with
+  `.claude/hermod/state/ALLOW_COMMIT` (counts only on the remote default branch); then one summary per session
+  travels (skill use; failed commands as plain-word keys, never text or output). `ledger.mode: "summary"`, the
+  newest other branch in the brief, a Stop reminder and the check `hermod-state`. `docs/kit.md` section 11.
 
 ## Next step
-- Graphify (PRs #3 merged, #5 open): run `query` and `path` once; build a graph in one private repository and check
+- 0.3.0: merge (Emil: "I approve everything merge"), tag `v0.3.0` on GitHub on the merge commit, sync it into the
+  three targets, then the opt-in pull requests in the two private ones (the state marker, the graph marker, and the
+  summary-mode ledger where the ledger is off). The public target never opts in.
+- Graphify (PRs #3 and #5 merged, 0.2.0 synced into two targets): run `query` and `path` once; build a graph in one private repository and check
   `graph.json` for the home path; merge `.claude/hermod/graph/ALLOW_COMMIT` there as its own pull request, then the
   graph. Then tag a release and sync with `--skills graphify`. Emil's other-device and cloud-session setup (install
   graphify there) is still to do.
@@ -44,11 +49,11 @@ not done or not verified, and one line per recent session. Each decision is one 
   built-in memory tool propose even an add in an unattended run (a job's input is often outside text). Keep the
   stricter rule, or allow adds again from unattended runs whose input is all trusted?
 - An empty root commit was pushed to `main` so the empty repository had a base branch for this pull request.
-- One target repository turned the ledger off, because failed command output can hold personal text. Then no
-  skill use is recorded either (the curator now says so instead of calling every skill stale). A ledger mode that
-  records only the command, its exit code and skill use would let such a repository turn it back on. Worth building?
 
 ## Not done / not verified
+- State travel (0.3.0): tested with temporary repositories and local remote-tracking refs, not with a real remote
+  or in a live Claude Code session; Windows not tested. A password typed as the second or third word of a listed
+  tool's command would travel in a key (`docs/kit.md`, known limits).
 - Graphify: Emil ran the build, `god-nodes`, `explain` and `affected` on Windows (0.9.105) and they worked. `query`
   and `path` are not run yet, and no live Claude Code session has used the skill.
 - No live API call was made: `npm run eval:live` needs `HERMOD_LIVE=1` and a key, and was not run. Every model call
@@ -64,6 +69,8 @@ not done or not verified, and one line per recent session. Each decision is one 
   tooling (dev-time, no runtime exposure). Revisit when ESLint and typescript-eslint move past it.
 
 ## Recent sessions
+- 2026-11-10: kit 0.3.0: state that follows you between devices, opt-in for private repositories (session summaries,
+  ledger summary mode, newer branches in the brief, the Stop reminder, the `hermod-state` check); 27 new tests.
 - 2026-11-10: kit 0.2.0 prepared (optional `graphify` skill, seeded `graphify-private` check, opt-in committed graph in private repos; PRs #3, #5). Tag `v0.2.0` goes on the merge commit of the release PR.
 - 2026-11-10: Emil tagged `v0.1.0` on `32589df` on GitHub. Status and Next step say so, and the licence question is
   closed: 0.1.0 is MIT (`docs/decisions.md`).

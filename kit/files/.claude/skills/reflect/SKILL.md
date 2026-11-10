@@ -31,7 +31,10 @@ save" is a good and common outcome.
 
    Then run `node .claude/hermod/validate.mjs` and `node .claude/hermod/check.mjs --self-test`. Fix or drop proposals
    until both pass.
-5. **Record skill use** for the monthly curator: `node .claude/hermod/reflect-prep.mjs --write-usage`.
+5. **Record the session** for the curator and your other devices: `node .claude/hermod/reflect-prep.mjs --write-usage`.
+   In a repository that lets state travel (`.claude/hermod/state/ALLOW_COMMIT` on the default branch) it writes
+   `.claude/hermod/state/sessions/<date>-<id8>.json` (skill use, failed commands as plain-word keys, never output);
+   commit it with the rest. Elsewhere it writes nothing and says why. Never create `ALLOW_COMMIT` yourself.
 6. **Hand it to a person.** Commit the changes on the working branch as one commit, `hermod: proposals from
    /reflect`, and list them in the pull request under **Hermod proposals**: what, why, evidence. If there were none,
    write "Hermod proposals: nothing to save". Never push to the default branch and never merge.

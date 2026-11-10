@@ -14,6 +14,7 @@
     "includeSkills": true,
     "includeGit": true,
     "maxBranches": 6,
+    "otherBranches": 1,
     "extra": []
   },
   "lessons": {
@@ -51,10 +52,12 @@
     "remind": [],
     "runChecks": true,
     "validateKnowledge": true,
-    "maxBlocksPerSession": 2
+    "maxBlocksPerSession": 2,
+    "travel": true
   },
   "ledger": {
     "enabled": true,
+    "mode": "full",
     "maxOutputChars": 2000,
     "maxFileBytes": 2000000,
     "extraRedactPatterns": []
