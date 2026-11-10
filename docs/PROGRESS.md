@@ -23,9 +23,15 @@ not done or not verified, and one line per recent session. Each decision is one 
   all three, the runtime vendored into one app, and an agent plan for another, which waits for Emil's answers. This
   repository is public, so their names and details stay in their own progress logs.
 
+- **Graphify** (2026-11-10, PR #3, merged): an unmodified copy (Apache-2.0, upstream `5eedffa`, 0.9.105) is in Emil's
+  private repository `graphify-kit`. The optional skill `graphify` (`--skills graphify`) and the seeded check
+  `graphify-private` join it to the kit; the graph lives under `.claude/hermod/.local/`. `docs/kit.md` section 10.
+
 ## Next step
-- Nothing waits for 0.1.0. A later kit or runtime change reaches the targets the same way, each in its own pull
-  request there: `node scripts/sync.mjs --target <repo> --ref <tag or full sha>` and
+- Graphify (PR #3, merged): Emil installs it once (`uv tool install` from `graphify-kit` at a full sha) and runs the
+  skill's commands once by hand; fix the skill if one fails. Then tag a release and sync with `--skills graphify`.
+- A later kit or runtime change reaches the targets the way 0.1.0 did, each in its own pull request there:
+  `node scripts/sync.mjs --target <repo> --ref <tag or full sha>` and
   `node scripts/vendor-runtime.mjs --target <app>/vendor/hermod --ref <tag or full sha>`.
 - For a later release, the tag is made on GitHub (Releases, Draft a new release, target the merged commit): a Claude
   Code cloud session is refused a tag push (HTTP 403), though its branch pushes work.
@@ -40,6 +46,8 @@ not done or not verified, and one line per recent session. Each decision is one 
   records only the command, its exit code and skill use would let such a repository turn it back on. Worth building?
 
 ## Not done / not verified
+- Graphify was never installed or run (installing its code was refused in the session); the skill's commands come
+  from its `--help` text, and no live Claude Code session used the skill.
 - No live API call was made: `npm run eval:live` needs `HERMOD_LIVE=1` and a key, and was not run. Every model call
   in the tests and evals is the fake client.
 - The hooks were tested as processes (vitest runs them with real stdin and git repositories), not in a live Claude
@@ -55,6 +63,7 @@ not done or not verified, and one line per recent session. Each decision is one 
 ## Recent sessions
 - 2026-11-10: Emil tagged `v0.1.0` on `32589df` on GitHub. Status and Next step say so, and the licence question is
   closed: 0.1.0 is MIT (`docs/decisions.md`).
+- 2026-11-10: Graphify joined as an optional skill and a seeded check (draft PR); the copy is in the private `graphify-kit`.
 - 2026-11-09: PR #1 squash-merged as `32589df` (0.1.0) on Emil's word, and the pull requests in the three targets
   too; each target pinned to `32589df` in a follow-up pull request. The tag could not be pushed (see Next step).
 - 2026-11-06: /reflect, on evidence gathered by hand: a check, `no-floating-versions` (no `@latest`/`@canary`,
