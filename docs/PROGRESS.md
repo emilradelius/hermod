@@ -64,6 +64,7 @@ not done or not verified, and one line per recent session. Each decision is one 
   tooling (dev-time, no runtime exposure). Revisit when ESLint and typescript-eslint move past it.
 
 ## Recent sessions
+- 2026-11-10: kit 0.2.0 prepared (optional `graphify` skill, seeded `graphify-private` check, opt-in committed graph in private repos; PRs #3, #5). Tag `v0.2.0` goes on the merge commit of the release PR.
 - 2026-11-10: Emil tagged `v0.1.0` on `32589df` on GitHub. Status and Next step say so, and the licence question is
   closed: 0.1.0 is MIT (`docs/decisions.md`).
 - 2026-11-10: Graphify joined as an optional skill and a seeded check (draft PR); the copy is in the private `graphify-kit`.
