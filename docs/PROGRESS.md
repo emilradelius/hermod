@@ -3,9 +3,9 @@
 Short on purpose, so a new session can read it whole: the current status, the next step, open questions, what is
 not done or not verified, and one line per recent session. Each decision is one line in `docs/decisions.md`.
 
-## Status (2026-11-09)
-- **0.1.0 is merged** (PR #1, squash commit `32589df`, 2026-11-09). The tag `v0.1.0` is not on GitHub yet (see
-  Next step).
+## Status (2026-11-10)
+- **0.1.0 is released**: PR #1, squash commit `32589df` (2026-11-09), tagged `v0.1.0` by Emil on GitHub
+  (2026-11-10).
 - **Part A, the kit, is built**: session brief, lessons and skills with a validator,
   the Stop ritual check, the session ledger, `/reflect` and its evidence bundle, lessons as checks, recall (BM25),
   the curator, and the pinned sync with opt-in library skills. 795 kit tests. `docs/kit.md`.
@@ -23,26 +23,23 @@ not done or not verified, and one line per recent session. Each decision is one 
   all three, the runtime vendored into one app, and an agent plan for another, which waits for Emil's answers. This
   repository is public, so their names and details stay in their own progress logs.
 
-- **Graphify** (2026-11-10, draft PR #3): an unmodified copy (Apache-2.0, upstream `5eedffa`, 0.9.105) is in Emil's
+- **Graphify** (2026-11-10, PR #3, merged): an unmodified copy (Apache-2.0, upstream `5eedffa`, 0.9.105) is in Emil's
   private repository `graphify-kit`. The optional skill `graphify` (`--skills graphify`) and the seeded check
   `graphify-private` join it to the kit; the graph lives under `.claude/hermod/.local/`. `docs/kit.md` section 10.
 
 ## Next step
-- Emil adds the tag `v0.1.0` on `32589df` on GitHub: Releases, Draft a new release, tag `v0.1.0`, target the commit
-  `32589df`, Publish. The session that merged it was refused a tag push (HTTP 403; branch pushes work). Settle the
-  licence question below first if it is still open.
-- Graphify: Emil installs it once (`uv tool install` from `graphify-kit` at a full sha) and runs the skill's
-  commands once by hand; fix the skill if one fails. Then merge PR #3, tag a release, and sync with `--skills graphify`.
-- A later kit or runtime change reaches the targets the same way, each in its own pull request there:
+- Graphify (PR #3, merged): Emil installs it once (`uv tool install` from `graphify-kit` at a full sha) and runs the
+  skill's commands once by hand; fix the skill if one fails. Then tag a release and sync with `--skills graphify`.
+- A later kit or runtime change reaches the targets the way 0.1.0 did, each in its own pull request there:
   `node scripts/sync.mjs --target <repo> --ref <tag or full sha>` and
   `node scripts/vendor-runtime.mjs --target <app>/vendor/hermod --ref <tag or full sha>`.
+- For a later release, the tag is made on GitHub (Releases, Draft a new release, target the merged commit): a Claude
+  Code cloud session is refused a tag push (HTTP 403), though its branch pushes work.
 
 ## Open questions
 - Unattended runs: the 2026-11-05 decision let them add memories to an add-only store. The hardening made the
   built-in memory tool propose even an add in an unattended run (a job's input is often outside text). Keep the
   stricter rule, or allow adds again from unattended runs whose input is all trusted?
-- The licence is MIT, as asked. MIT lets anyone reuse Hermod, also commercially. If Hermod itself may become a paid
-  product, decide the licence before the first tagged release.
 - An empty root commit was pushed to `main` so the empty repository had a base branch for this pull request.
 - One target repository turned the ledger off, because failed command output can hold personal text. Then no
   skill use is recorded either (the curator now says so instead of calling every skill stale). A ledger mode that
@@ -64,6 +61,8 @@ not done or not verified, and one line per recent session. Each decision is one 
   tooling (dev-time, no runtime exposure). Revisit when ESLint and typescript-eslint move past it.
 
 ## Recent sessions
+- 2026-11-10: Emil tagged `v0.1.0` on `32589df` on GitHub. Status and Next step say so, and the licence question is
+  closed: 0.1.0 is MIT (`docs/decisions.md`).
 - 2026-11-10: Graphify joined as an optional skill and a seeded check (draft PR); the copy is in the private `graphify-kit`.
 - 2026-11-09: PR #1 squash-merged as `32589df` (0.1.0) on Emil's word, and the pull requests in the three targets
   too; each target pinned to `32589df` in a follow-up pull request. The tag could not be pushed (see Next step).

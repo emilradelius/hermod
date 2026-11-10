@@ -5,6 +5,8 @@ One line per decision: the day, who decided, what, and where the details are. Ne
 earlier one, change the old line to say "replaced by …" instead of deleting it.
 
 ## What Hermod is
+- 2026-11-10, Emil: `v0.1.0` is tagged on `32589df` (a GitHub release) under the MIT licence. The open question
+  (MIT lets anyone reuse Hermod, also commercially; decide before the first tagged release) was put to him first.
 - 2026-11-05, Emil: build our own Hermes-style learning loop instead of installing or forking Hermes Agent: proposals
   only, a human or a test approves. `docs/research.md`.
 - 2026-11-05, Emil: the agent only proposes; a person (merging a pull request, or approving in an inbox) or an
