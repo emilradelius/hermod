@@ -231,8 +231,8 @@ mode). Hermod does not contain it and does not depend on it. `--skills graphify`
 when to ask the graph instead of grepping, and how to do it safely:
 
 - The graph maps a repository, so it is written to `.claude/hermod/.local/graphify-out` (`GRAPHIFY_OUT`), which the
-  hooks keep out of git. The seeded check `graphify-private` fails a change that contains `graphify-out/`,
-  `GRAPH_REPORT.md` or `.graphify_*` files.
+  hooks keep out of git. The seeded check `graphify-private` fails a change that contains a `graphify-out*/` folder,
+  `GRAPH_REPORT.md`, `GRAPH_TREE.html` or `.graphify_*` files.
 - Always `--code-only`, never another model provider, and never `graphify install`, `graphify hook install` or
   `graphify uninstall` (they edit `CLAUDE.md`, settings and git hooks, which only sync may do).
 - The tool is installed by a person, pinned to a full commit of the private `graphify-kit` copy. Sync does not

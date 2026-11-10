@@ -31,7 +31,15 @@ uv tool install "git+https://github.com/<owner>/graphify-kit@<full sha>"
 graphify --version
 ```
 
+`uv tool install` ignores graphify's `uv.lock`, so its dependencies resolve from version ranges: two computers on
+the same sha can run different dependency versions. Note `uv tool list` next to a result you rely on. Graphify
+also refreshes assistant skill files it installed earlier, on any command that is not `--version` or `--help`;
+if it was ever installed into an assistant on this computer, expect those files to change outside the repository.
+
 ## Procedure
+
+The commands below come from graphify's `--help` and were not run when this skill was written. If one fails or the
+graph is not where step 1 looks, stop and tell the person; do not fall back to the default `graphify-out/`.
 
 1. Check whether a graph exists: `ls .claude/hermod/.local/graphify-out/graph.json`.
 2. If not, or after large changes, build it (code only, output under `.local`):

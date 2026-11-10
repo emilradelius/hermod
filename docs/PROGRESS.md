@@ -23,16 +23,16 @@ not done or not verified, and one line per recent session. Each decision is one 
   all three, the runtime vendored into one app, and an agent plan for another, which waits for Emil's answers. This
   repository is public, so their names and details stay in their own progress logs.
 
-## Graphify (2026-11-10, draft PR)
-- An unmodified copy of Graphify (Apache-2.0, upstream `5eedffa`, 0.9.105) is in Emil's private repository
-  `graphify-kit`. Hermod joins it with the optional skill `graphify` (`--skills graphify`) and the seeded check
-  `graphify-private`; the graph lives under `.claude/hermod/.local/`. `docs/kit.md` section 10.
-- Not verified: graphify was not installed or run here; no live Claude Code session used the skill.
+- **Graphify** (2026-11-10, draft PR #3): an unmodified copy (Apache-2.0, upstream `5eedffa`, 0.9.105) is in Emil's
+  private repository `graphify-kit`. The optional skill `graphify` (`--skills graphify`) and the seeded check
+  `graphify-private` join it to the kit; the graph lives under `.claude/hermod/.local/`. `docs/kit.md` section 10.
 
 ## Next step
 - Emil adds the tag `v0.1.0` on `32589df` on GitHub: Releases, Draft a new release, tag `v0.1.0`, target the commit
   `32589df`, Publish. The session that merged it was refused a tag push (HTTP 403; branch pushes work). Settle the
   licence question below first if it is still open.
+- Graphify: Emil installs it once (`uv tool install` from `graphify-kit` at a full sha) and runs the skill's
+  commands once by hand; fix the skill if one fails. Then merge PR #3, tag a release, and sync with `--skills graphify`.
 - A later kit or runtime change reaches the targets the same way, each in its own pull request there:
   `node scripts/sync.mjs --target <repo> --ref <tag or full sha>` and
   `node scripts/vendor-runtime.mjs --target <app>/vendor/hermod --ref <tag or full sha>`.
@@ -49,6 +49,8 @@ not done or not verified, and one line per recent session. Each decision is one 
   records only the command, its exit code and skill use would let such a repository turn it back on. Worth building?
 
 ## Not done / not verified
+- Graphify was never installed or run (installing its code was refused in the session); the skill's commands come
+  from its `--help` text, and no live Claude Code session used the skill.
 - No live API call was made: `npm run eval:live` needs `HERMOD_LIVE=1` and a key, and was not run. Every model call
   in the tests and evals is the fake client.
 - The hooks were tested as processes (vitest runs them with real stdin and git repositories), not in a live Claude
