@@ -61,6 +61,9 @@ earlier one, change the old line to say "replaced by …" instead of deleting it
   token, glued flag value (`-pSecret`), path or other argument becomes `…`. Replaces the 2026-11-10 rule that kept
   any word starting with `-` and any path. A session id must be a UUID. `usage/` is no longer written; old files
   are still read.
+- 2026-11-11, Claude (a `/code-review` finding on a target's sync): the opt-in reads `origin/HEAD` the way the
+  check does. When it is set, only its branch counts, and a branch that is gone means nothing counts; only without
+  it do `origin/main` and then `origin/master` count. So the Stop reminder never asks for a commit the check refuses.
 - 2026-11-10, Claude: every brief shows the newest branch ahead of HEAD with its last commit and Next step (where
   the person left off on another device), as data from an unmerged branch: redacted, injection-scanned, at most
   700 characters (`brief.otherBranches`). The Stop hook asks once, in an opted-in repository, to write the

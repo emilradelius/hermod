@@ -3,9 +3,10 @@
 Short on purpose, so a new session can read it whole: the current status, the next step, open questions, what is
 not done or not verified, and one line per recent session. Each decision is one line in `docs/decisions.md`.
 
-## Status (2026-11-10)
-- **Releases**: 0.1.0 (`32589df`, tagged `v0.1.0`) and 0.2.0 (`8df3d2f`, tagged `v0.2.0`: the optional graphify
-  skill). 0.3.0 is the state-travel branch (below).
+## Status (2026-11-11)
+- **Releases**: 0.1.0 (`32589df`, tagged `v0.1.0`), 0.2.0 (`8df3d2f`, tagged `v0.2.0`: the optional graphify
+  skill) and 0.3.0 (`2143d5c`, PR #7, not tagged: state travel, below). 0.3.1 makes the opt-in read `origin/HEAD`
+  the way the `hermod-state` check does.
 - **Part A, the kit, is built**: session brief, lessons and skills with a validator,
   the Stop ritual check, the session ledger, `/reflect` and its evidence bundle, lessons as checks, recall (BM25),
   the curator, and the pinned sync with opt-in library skills. 795 kit tests. `docs/kit.md`.
@@ -31,9 +32,10 @@ not done or not verified, and one line per recent session. Each decision is one 
   newest other branch in the brief, a Stop reminder and the check `hermod-state`. `docs/kit.md` section 11.
 
 ## Next step
-- 0.3.0: merge (Emil: "I approve everything merge"), tag `v0.3.0` on GitHub on the merge commit, sync it into the
-  three targets, then the opt-in pull requests in the two private ones (the state marker, the graph marker, and the
-  summary-mode ledger where the ledger is off). The public target never opts in.
+- 0.3.1: merge (Emil: "I approve everything merge"), sync its merge commit into the three targets, then the opt-in
+  pull requests in the two private ones (the state marker and the graph marker; the summary-mode ledger rides the
+  sync where the ledger was off). The public target never opts in. Emil tags `v0.3.1` on GitHub on the merge
+  commit (0.3.0 needs no tag of its own: no target is pinned to it).
 - Graphify (PRs #3 and #5 merged, 0.2.0 synced into two targets): run `query` and `path` once; build a graph in one private repository and check
   `graph.json` for the home path; merge `.claude/hermod/graph/ALLOW_COMMIT` there as its own pull request, then the
   graph. Then tag a release and sync with `--skills graphify`. Emil's other-device and cloud-session setup (install
@@ -69,6 +71,8 @@ not done or not verified, and one line per recent session. Each decision is one 
   tooling (dev-time, no runtime exposure). Revisit when ESLint and typescript-eslint move past it.
 
 ## Recent sessions
+- 2026-11-11: kit 0.3.1: the opt-in reads `origin/HEAD` the way the `hermod-state` check does (when it is set, only its
+  branch counts, also when that branch is gone), so the Stop reminder never asks for a commit the check refuses.
 - 2026-11-10: kit 0.3.0: state that follows you between devices, opt-in for private repositories (session summaries,
   ledger summary mode, newer branches in the brief, the Stop reminder, the `hermod-state` check); 27 new tests.
 - 2026-11-10: kit 0.2.0 prepared (optional `graphify` skill, seeded `graphify-private` check, opt-in committed graph in private repos; PRs #3, #5). Tag `v0.2.0` goes on the merge commit of the release PR.

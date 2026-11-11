@@ -258,6 +258,24 @@ describe("opting in (travelState)", () => {
     expect(s.why).toContain("is not on origin/main yet");
   });
 
+  it("follows origin/HEAD alone when it is set, even when its branch is gone (as the check does)", () => {
+    const repo = makeRepo();
+    repo.commit({ files: OPTED, message: "opt in" });
+    repo.git("update-ref", "refs/remotes/origin/main", "HEAD");
+    expect(travel.travelState(repo.root).allowed).toBe(true);
+    repo.git("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/gone");
+    expect(travel.remoteDefaultRef(repo.root)).toBeNull();
+    expect(travel.travelState(repo.root).allowed).toBe(false);
+    // the check agrees: origin/HEAD names a branch without the marker, so a summary is refused
+    const ctx = {
+      changedFiles: [FILE],
+      read: (p: string) => (p === FILE ? JSON.stringify(validSummary()) : null),
+      readAt: (ref: string, p: string) => (ref === "refs/remotes/origin/main" && p === MARKER ? "private\n" : null),
+      git: () => ({ ok: true, stdout: "refs/remotes/origin/gone\n" }),
+    };
+    expect(check.run(ctx).ok).toBe(false);
+  });
+
   it("is on when the remote default branch has the marker, following origin/HEAD", () => {
     const repo = makeRepo();
     repo.git("update-ref", "refs/remotes/origin/main", "HEAD");

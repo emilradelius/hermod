@@ -284,8 +284,9 @@ Hermod's working state follows them through git. A **public** repository (Hermod
 | Session hook state, frozen brief, reflect bundle, `errors.log`, curator report | `.local/` | derived | never; rebuilt on each device |
 
 **Opting in.** A person creates `.claude/hermod/state/ALLOW_COMMIT` and merges it to the default branch. It counts
-only on the remote default branch (`origin/HEAD`'s target, else `origin/main`, else `origin/master`; a local branch
-never counts), so a marker created during a session has no effect until a person merges it. Sync refuses to ship
+only on the remote default branch (`origin/HEAD`'s branch when `origin/HEAD` is set, and nothing when that branch is
+gone; without it `origin/main`, else `origin/master`; a local branch never counts), so a marker created during a
+session has no effect until a person merges it. Sync refuses to ship
 one; the hooks and scripts never write one.
 
 **What travels.** One file per session, `.claude/hermod/state/sessions/<YYYY-MM-DD>-<id8>.json`, written by
