@@ -20,10 +20,11 @@
  * Summary mode (config ledger.mode "summary"): no command text, output or file names are ever written, not even
  * here on the device. A failure is { id, ts, session, type: "fail", key, exit } and a resolution
  * { id, ts, session, type: "resolved", failureId, attempts, key }, where key is the summary key (lib/summary.mjs:
- * at most three plain words). No snapshot is taken, so no git call is made. Skill entries are the same as in full
- * mode. This is the mode for a repository whose command output can hold personal text.
+ * at most three plain words). No snapshot is taken, so no git call is made. An open failure is kept under a hash of
+ * its full redacted key, so failures match exactly and no command text is stored. Skill entries are the same as in
+ * full mode. This is the mode for a repository whose command output can hold personal text.
  */
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { hashFiles, head, isSafeRef, runGit, uncommittedFiles } from "./git.mjs";
@@ -514,15 +515,19 @@ export function recordToolEvent(root, input, options = {}) {
 
   // The key is made from the redacted command (and redacted again), so a secret can never reach it, and the
   // same command always gives the same key. Summary mode keeps only its plain words (lib/summary.mjs).
+  // An open failure is matched on the full key; in summary mode only its hash is kept on the device, so commands
+  // whose summary keys look alike ("grep -rn …") never resolve each other.
   const summaryMode = options.mode === "summary";
   const safeCommand = redact(event.command ?? "", { extraPatterns });
-  const key = summaryMode ? summaryKey(commandKey(safeCommand)) : redact(commandKey(safeCommand), { extraPatterns });
+  const fullKey = redact(commandKey(safeCommand), { extraPatterns });
+  const key = summaryMode ? summaryKey(fullKey) : fullKey;
+  const openKey = summaryMode && fullKey !== "" ? `h:${createHash("sha256").update(fullKey).digest("hex").slice(0, 32)}` : fullKey;
   if (event.kind === "success") {
     // Fast path: no open failure for this session → nothing to do, no git.
-    if (rawSession === null || key === "") return { ...none, why: "success" };
+    if (rawSession === null || openKey === "") return { ...none, why: "success" };
     const open = readOpenFailures(root, rawSession);
     if (open.length === 0) return { ...none, why: "success" };
-    const match = open.find((f) => f.key === key);
+    const match = open.find((f) => f.key === openKey);
     if (!match) return { ...none, why: "success (no open failure for this key)" };
     if (summaryMode) {
       const entry = appendEntry(
@@ -581,14 +586,14 @@ export function recordToolEvent(root, input, options = {}) {
     options,
   );
   let usedGit = false;
-  if (rawSession !== null && key !== "") {
+  if (rawSession !== null && openKey !== "") {
     const open = readOpenFailures(root, rawSession);
-    const previous = open.find((f) => f.key === key);
+    const previous = open.find((f) => f.key === openKey);
     const rest = open.filter((f) => f !== previous);
     const attempts = (previous?.attempts ?? 0) + 1;
     if (summaryMode) {
       // No snapshot: summary mode never records which files changed, so it needs no git.
-      rest.push({ id, key, ts, attempts, head: null, snapshot: {}, dirty: [] });
+      rest.push({ id, key: openKey, ts, attempts, head: null, snapshot: {}, dirty: [] });
     } else {
       usedGit = true;
       const dirty = uncommittedFiles(root).slice(0, MAX_DIRTY_PATHS);

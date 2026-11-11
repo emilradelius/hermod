@@ -193,6 +193,10 @@ describe("the hermod-state check", () => {
     repo.git("update-ref", "refs/remotes/origin/develop", "HEAD");
     repo.git("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/develop");
     expect((await run()).status).toBe("pass");
+    // origin/HEAD decides: a marker on origin/main does not count when the default is another branch
+    repo.git("update-ref", "refs/remotes/origin/main", "HEAD");
+    repo.git("update-ref", "refs/remotes/origin/develop", base + "~1");
+    expect((await run()).status).toBe("fail");
   });
 });
 
@@ -252,6 +256,19 @@ describe("writeSessionSummary", () => {
     expect(JSON.stringify(s)).not.toContain("boom");
   });
 
+  it("never replaces another session's summary that shares the id prefix", () => {
+    const repo = makeRepo();
+    optIn(repo);
+    const other = "0f8fad5b-1111-4222-8333-444455556666";
+    repo.write(FILE, JSON.stringify(validSummary({ session: other })));
+    expect(travel.findSessionSummary(repo.root, ID)).toBeNull();
+    const r = travel.writeSessionSummary(repo.root, ID, { date: "2026-11-10", entries: [] });
+    expect(r).toMatchObject({ written: false });
+    expect(r.why).toContain("belongs to another session");
+    expect(JSON.parse(repo.read(FILE) ?? "{}").session).toBe(other);
+    expect(travel.writeSessionSummary(repo.root, ID, { date: "2026-11-11", entries: [] })).toMatchObject({ written: true, file: ".claude/hermod/state/sessions/2026-11-11-0f8fad5b.json" });
+  });
+
   it("refuses a session id that is not a UUID", () => {
     const repo = makeRepo();
     optIn(repo);
@@ -275,12 +292,22 @@ describe("ledger summary mode", () => {
     expect(f.usedGit).toBe(false);
     expect(Object.keys(f.entry).sort()).toEqual(["exit", "id", "key", "session", "ts", "type"]);
     expect(f.entry.key).toBe("npm run build");
-    const open = JSON.parse(repo.read(`.claude/hermod/.local/sessions/${ID}/open-failures.json`) ?? "{}");
-    expect(open.open[0]).toMatchObject({ key: "npm run build", snapshot: {}, dirty: [], head: null });
+    const openText = repo.read(`.claude/hermod/.local/sessions/${ID}/open-failures.json`) ?? "{}";
+    expect(JSON.parse(openText).open[0]).toMatchObject({ key: expect.stringMatching(/^h:[0-9a-f]{32}$/), snapshot: {}, dirty: [], head: null });
+    expect(openText).not.toContain("npm run build");
     const r = ledger.recordToolEvent(repo.root, ok("npm run build"), { mode: "summary" });
     expect(r).toMatchObject({ action: "resolved", usedGit: false });
     expect(Object.keys(r.entry).sort()).toEqual(["attempts", "failureId", "id", "key", "session", "ts", "type"]);
     expect(JSON.stringify(lines(repo))).not.toMatch(/private note|diary|Emil/);
+  });
+
+  it("matches open failures exactly: commands with the same summary key do not resolve each other", () => {
+    const repo = makeRepo();
+    ledger.recordToolEvent(repo.root, fail("grep -rn foo", "no match"), { mode: "summary" });
+    expect(ledger.recordToolEvent(repo.root, ok("grep -rn bar"), { mode: "summary" }).action).toBe("none");
+    const r = ledger.recordToolEvent(repo.root, ok("grep -rn foo"), { mode: "summary" });
+    expect(r.action).toBe("resolved");
+    expect(r.entry.key).toBe("grep -rn …");
   });
 
   it("the hook uses ledger.mode from config.json", () => {
@@ -362,6 +389,32 @@ describe("brief: newer work on other branches", () => {
     expect(b.text).not.toContain("Add the state check");
   });
 
+  it("shows newer work another device pushed to this branch's own upstream", () => {
+    const repo = makeRepo({ files: { "docs/PROGRESS.md": progress("Local step.") }, commits: [{ message: "local", date: "2026-11-01T10:00:00Z" }] });
+    repo.git("remote", "add", "origin", "https://example.invalid/repo.git");
+    repo.git("checkout", "-q", "-b", "tmp");
+    repo.commit({ files: { "docs/PROGRESS.md": progress("Pushed from the phone.") }, message: "phone work", date: "2026-11-05T10:00:00Z" });
+    repo.git("update-ref", "refs/remotes/origin/main", "HEAD");
+    repo.git("checkout", "-q", "main");
+    repo.git("branch", "-q", "-D", "tmp");
+    repo.git("branch", "--set-upstream-to=origin/main");
+    const b = brief.buildBrief(repo.root, null, { now: Date.parse("2026-11-06T10:00:00Z") });
+    expect(b.text).toContain("- origin/main (1 day ago) · last commit: phone work");
+    expect(b.text).toContain("Next step there: Pushed from the phone.");
+  });
+
+  it("uses the configured section about the next step", () => {
+    const sv = (next: string) => `# Progress\n\n## Status\nX.\n\n## Nästa steg\n${next}\n`;
+    const repo = makeRepo({
+      files: { "docs/PROGRESS.md": sv("Gammalt."), ".claude/hermod/config.json": JSON.stringify({ version: 1, brief: { progress: { sections: ["Status", "Nästa steg"] } } }) },
+      commits: [{ message: "main", date: "2026-11-01T10:00:00Z" }],
+    });
+    repo.git("checkout", "-q", "-b", "claude/sv");
+    repo.commit({ files: { "docs/PROGRESS.md": sv("Bygg klart kontrollen.") }, message: "sv", date: "2026-11-05T10:00:00Z" });
+    repo.git("checkout", "-q", "main");
+    expect(brief.buildBrief(repo.root, null, { now: Date.parse("2026-11-06T10:00:00Z") }).text).toContain("Nästa steg there: Bygg klart kontrollen.");
+  });
+
   it("is off with brief.otherBranches 0", () => {
     const repo = twoBranches("Finish it.", { ".claude/hermod/config.json": JSON.stringify({ version: 1, brief: { otherBranches: 0 } }) });
     const b = brief.buildBrief(repo.root, null, { now: Date.parse("2026-11-06T10:00:00Z") });
@@ -380,6 +433,12 @@ describe("brief: newer work on other branches", () => {
     expect(b.text).toMatch(/- Last fetch: 3 days ago, so newer work from another device may be missing \(git fetch, then node .+\/brief\.mjs\)\./);
     utimesSync(fetchHead, new Date(), new Date());
     expect(brief.buildBrief(repo.root, null).text).not.toContain("Last fetch:");
+    // without FETCH_HEAD (never fetched since the clone), packed-refs dates the last fetch
+    repo.remove(".git/FETCH_HEAD");
+    repo.git("pack-refs", "--all");
+    const packed = path.join(repo.root, ".git", "packed-refs");
+    utimesSync(packed, threeDaysAgo, threeDaysAgo);
+    expect(brief.buildBrief(repo.root, null).text).toContain("- Last fetch: 3 days ago");
   });
 });
 

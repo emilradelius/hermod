@@ -364,9 +364,31 @@ export function readSessionSummaries(root) {
  */
 export function findSessionSummary(root, sessionId) {
   if (typeof sessionId !== "string" || !UUID.test(sessionId)) return null;
+  const dir = safeSessionsDir(root);
+  if (dir === null) return null;
   const suffix = `-${sessionId.slice(0, 8)}.json`;
-  const name = summaryFileNames(root).find((n) => n.endsWith(suffix) && FILE_NAME.test(n));
-  return name ? `${SESSIONS_DIR}/${name}` : null;
+  for (const name of summaryFileNames(root)) {
+    if (!name.endsWith(suffix) || !FILE_NAME.test(name)) continue;
+    // Only this session's own file: another session may share the first 8 characters of the id.
+    if (summarySession(path.join(dir, name)) === sessionId) return `${SESSIONS_DIR}/${name}`;
+  }
+  return null;
+}
+
+/**
+ * The "session" of a summary file, or null when it cannot be read.
+ * @param {string} abs
+ * @returns {string | null}
+ */
+function summarySession(abs) {
+  const text = readText(abs, { maxBytes: MAX_SUMMARY_BYTES + 1 });
+  if (text === null) return null;
+  try {
+    const v = JSON.parse(text);
+    return isPlainObject(v) && typeof v.session === "string" ? v.session : null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -395,6 +417,9 @@ export function writeSessionSummary(root, sessionId, input) {
   if (dir === null) return { written: false, file: null, why: `${SESSIONS_DIR} leads outside the repository`, summary: null };
   const existing = findSessionSummary(root, sessionId);
   const fileName = existing ? path.posix.basename(existing) : summaryFileName(input.date, sessionId);
+  if (!existing && fs.existsSync(path.join(dir, fileName))) {
+    return { written: false, file: null, why: `${SESSIONS_DIR}/${fileName} belongs to another session with the same id prefix`, summary: null };
+  }
   const date = fileName.slice(0, 10);
   const summary = buildSessionSummary({
     sessionId,

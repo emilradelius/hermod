@@ -263,14 +263,14 @@ export function formatReason(parts) {
  * @returns {Reason[]}
  */
 export function travelReasons(root, sessionId, start, changedFiles) {
-  if (!travelState(root).allowed) return [];
+  // Cheapest first: a session that changed nothing is never asked, and most repositories never opted in.
   const now = head(root);
   const committed = Boolean(start?.head && now && start.head !== now);
   if (changedFiles.length === 0 && !committed) return [];
+  if (!travelState(root).allowed) return [];
   /** @type {string[]} */
   const todo = [];
-  const used = readLedger(root, { session: sessionId }).length > 0;
-  if (used && findSessionSummary(root, sessionId) === null) {
+  if (findSessionSummary(root, sessionId) === null && readLedger(root, { session: sessionId }).length > 0) {
     todo.push("write this session's summary: node .claude/hermod/reflect-prep.mjs --write-usage (skill use and failed commands as plain-word keys, never output)");
   }
   const changed = new Set(changedFiles);

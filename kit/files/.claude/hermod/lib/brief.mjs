@@ -655,17 +655,6 @@ function commitTimeMs(root, ref) {
 }
 
 /**
- * HEAD's upstream as a short name ("origin/feature"), or null.
- * @param {string} root
- * @returns {string | null}
- */
-function upstreamName(root) {
-  const r = runGit(root, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"]);
-  const name = r.stdout.trim();
-  return r.ok && name !== "" ? name : null;
-}
-
-/**
  * A line about an old last fetch, or null (no remote, or a fetch in the last day). Reads file times only.
  * @param {string} root
  * @param {number} now
@@ -678,7 +667,8 @@ function staleFetchNote(root, now, toolsDir) {
   const dirs = runGit(root, ["rev-parse", "--absolute-git-dir", "--git-common-dir"]);
   if (!dirs.ok) return null;
   const [gitDir = "", commonRaw = ""] = dirs.stdout.trim().split("\n");
-  const common = path.resolve(gitDir, commonRaw);
+  // git prints the common dir relative to the folder it runs in (the root), or absolute.
+  const common = path.resolve(root, commonRaw);
   let newest = 0;
   for (const p of [path.join(gitDir, "FETCH_HEAD"), path.join(common, "FETCH_HEAD"), path.join(common, "packed-refs")]) {
     try {
@@ -707,30 +697,31 @@ function normNext(text) {
  * @param {GitFacts} git
  * @param {number} maxOther brief.otherBranches
  * @param {string} progressFile brief.progress.file
+ * @param {string} nextTitle the progress section to show (the configured one about the next step)
  * @param {string} toolsDir
  * @param {number} room
  * @param {number} now
  * @returns {BriefPart}
  */
-function otherBranchesPart(root, git, maxOther, progressFile, toolsDir, room, now) {
+function otherBranchesPart(root, git, maxOther, progressFile, nextTitle, toolsDir, room, now) {
   const name = "other-branches";
   if (!git.repo || maxOther <= 0 || !git.head) return { name, status: "off", text: "", chars: 0 };
   const headTime = commitTimeMs(root, "HEAD");
-  const upstream = upstreamName(root);
-  const currentNext = normNext(extractSection(readRepoFile(root, progressFile, DOC_MAX_BYTES) ?? "", "Next step")?.body ?? null);
+  const currentNext = normNext(extractSection(readRepoFile(root, progressFile, DOC_MAX_BYTES) ?? "", nextTitle)?.body ?? null);
   /** @type {Array<{ name: string, age: string, subject: string, next: string | null }>} */
   const picked = [];
   const seen = new Set([git.head]);
   for (const b of recentBranches(root, OTHER_BRANCHES_SCAN, { now })) {
     if (picked.length >= maxOther) break;
-    if (b.name === git.branch || b.name === upstream || seen.has(b.sha)) continue;
+    // The branch's own upstream counts too: another device may have pushed newer work to it.
+    if (b.name === git.branch || seen.has(b.sha)) continue;
     const t = Date.parse(b.date);
     // Newest first: once a branch is not newer than HEAD, none of the rest is.
     if (headTime === null || !Number.isFinite(t) || t <= headTime) break;
     seen.add(b.sha);
     if (runGit(root, ["merge-base", "--is-ancestor", b.sha, "HEAD"]).ok) continue;
     const text = showFile(root, b.sha, progressFile);
-    const next = text === null ? null : (extractSection(text, "Next step")?.body ?? null);
+    const next = text === null ? null : (extractSection(text, nextTitle)?.body ?? null);
     if (next !== null && normNext(next) === currentNext) continue;
     const log = runGit(root, ["log", "-1", "--format=%s", b.sha, "--"]);
     picked.push({ name: b.name, age: b.age, subject: log.ok ? log.stdout.trim() : "", next });
@@ -746,7 +737,7 @@ function otherBranchesPart(root, git, maxOther, progressFile, toolsDir, room, no
     const shownSubject = !unsafe && subject !== "" ? ` · last commit: ${oneLine(subject, 100)}` : "";
     let line = `- ${oneLine(redact(p.name), NAME_CHARS)}${p.age ? ` (${p.age})` : ""}${shownSubject}`;
     if (unsafe) line += "\n  Its text is not shown: it reads like instructions to an AI.";
-    else if (next !== null && normNext(next) !== "") line += `\n  Next step there: ${oneLine(next, OTHER_NEXT_CHARS)}`;
+    else if (next !== null && normNext(next) !== "") line += `\n  ${oneLine(nextTitle, NAME_CHARS)} there: ${oneLine(next, OTHER_NEXT_CHARS)}`;
     lines.push(line);
   }
   if (fetchNote !== null) lines.push(fetchNote);
@@ -861,6 +852,8 @@ export function buildBrief(root, config, options = {}) {
     : { name: "skills", status: /** @type {const} */ ("off"), text: "", chars: 0 };
 
   const progress = isPlainObject(b.progress) ? b.progress : DEFAULTS.brief.progress;
+  const sectionTitles = Array.isArray(progress.sections) ? progress.sections.filter((s) => typeof s === "string" && s.trim() !== "") : [];
+  const nextTitle = sectionTitles.find((s) => /next/i.test(s)) ?? sectionTitles[sectionTitles.length - 1] ?? "Next step";
   // Where the person left off on another device comes before this branch's own progress in the budget.
   const others = git
     ? take(
@@ -869,6 +862,7 @@ export function buildBrief(root, config, options = {}) {
           git,
           int(b.otherBranches, DEFAULTS.brief.otherBranches, 0, 3),
           str(progress.file, DEFAULTS.brief.progress.file),
+          nextTitle,
           toolsDir,
           roomFor(),
           now,

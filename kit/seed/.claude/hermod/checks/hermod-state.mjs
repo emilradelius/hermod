@@ -116,7 +116,8 @@ function summaryProblem(text, name) {
 function markerOnDefault(ctx) {
   const head = typeof ctx.git === "function" ? ctx.git(["symbolic-ref", "-q", "refs/remotes/origin/HEAD"]) : null;
   const target = head && head.ok ? String(head.stdout).trim() : "";
-  const refs = [...(target.startsWith("refs/remotes/origin/") ? [target] : []), ...DEFAULTS];
+  // origin/HEAD decides when it is set; origin/main and origin/master count only when it is not.
+  const refs = target.startsWith("refs/remotes/origin/") && !target.endsWith("/HEAD") ? [target] : DEFAULTS;
   return refs.some((ref) => {
     const text = typeof ctx.readAt === "function" ? ctx.readAt(ref, MARKER) : null;
     return text !== null && text !== undefined;
