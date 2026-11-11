@@ -7,7 +7,7 @@
 //   origin/main or origin/master), so a marker made in a session does nothing until a person merges it;
 // - adds any file under .claude/hermod/state/ other than ALLOW_COMMIT and sessions/<YYYY-MM-DD>-<id8>.json;
 // - adds a session summary that breaks the summary rules (lib/travel.mjs): unknown fields, or a command key that
-//   is not plain words (no prose, quoted text, e-mail, name=value, token or long digit run);
+//   is more than a program, flags, a tool's subcommand and a script name (no prose, path, value or password);
 // - adds a file under .claude/hermod/usage/ (no longer written; summaries go to state/sessions/).
 // Deleting such files always passes. It imports nothing, so the rules are repeated here from lib/summary.mjs and
 // lib/travel.mjs; the kit's tests keep them in step. It has no `when` list: it is cheap and must see every change.
@@ -28,27 +28,36 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const FILE_NAME = /^(\d{4}-\d{2}-\d{2})-([0-9a-f]{8})\.json$/;
 const SKILL_NAME = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 const BRANCH_PART = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
-const WORD = /^(?:-{1,2}|\.{1,2}\/)?[A-Za-z][A-Za-z0-9._/:+,-]*$/;
-const PROGRAM = /^(?:\.{1,2}\/)?[a-z][a-z0-9._/+-]*$/;
+// A key is at most three words: the program's name; then only flags ("-x" to "-xyz", "--long-name"), a tool's
+// subcommand as the second word, and a package manager's script name after "run" as the third. Anything else is "…".
+const PROGRAM = /^[a-z][a-z0-9._+-]*$/;
+const FLAG = /^(?:-[A-Za-z]{1,3}|--[a-z][a-z0-9]*(?:-[a-z0-9]+)*)$/;
+const SUBCOMMAND = /^[a-z][a-z0-9_-]*(?::[a-z0-9_-]+)*$/;
 const TOOLS = new Set(["bun", "cargo", "deno", "docker", "eslint", "gh", "git", "go", "jest", "kubectl", "make", "next", "node", "npm", "npx", "pip", "pip3", "pnpm", "prettier", "python", "python3", "supabase", "terraform", "tsc", "uv", "vercel", "vitest", "yarn"]);
+const MANAGERS = new Set(["bun", "npm", "pnpm", "yarn"]);
+const RUNNERS = new Set(["run", "run-script"]);
 const ELLIPSIS = "…";
 
 /** @param {unknown} w */
-const plain = (w) => typeof w === "string" && w !== "" && w.length <= 40 && WORD.test(w) && !/\d{6,}/.test(w) && !/[A-Za-z0-9]{16,}/.test(w);
+const plain = (w) => typeof w === "string" && w !== "" && w.length <= 40 && !/\d{6,}/.test(w) && !/[A-Za-z0-9]{16,}/.test(w);
 
-/** @param {string} w @param {number} i @param {string} program */
-function keepWord(w, i, program) {
+/** @param {string} w @param {number} i @param {string} program @param {string} second */
+function keepAt(w, i, program, second) {
   if (!plain(w)) return false;
-  if (i === 0) return PROGRAM.test(w);
-  return TOOLS.has(program.slice(program.lastIndexOf("/") + 1)) || w.startsWith("-") || /[/.]/.test(w);
+  if (FLAG.test(w)) return true;
+  if (i === 1) return TOOLS.has(program) && SUBCOMMAND.test(w);
+  if (i === 2) return MANAGERS.has(program) && RUNNERS.has(second) && SUBCOMMAND.test(w);
+  return false;
 }
 
 /** @param {unknown} key */
 function isKey(key) {
   if (typeof key !== "string" || key === "") return false;
   const words = key.split(" ");
-  if (words.length > 3) return false;
-  return words.every((w, i) => (w === ELLIPSIS ? words[i - 1] !== ELLIPSIS : keepWord(w, i, words[0] ?? "")));
+  if (words.length > 3 || words.some((w) => w === "")) return false;
+  const program = words[0] === ELLIPSIS ? "" : (words[0] ?? "");
+  if (program !== "" && !(PROGRAM.test(program) && plain(program))) return false;
+  return words.every((w, i) => i === 0 || w === ELLIPSIS || keepAt(w, i, program, words[1] ?? ""));
 }
 
 /** @param {unknown} v @returns {v is Record<string, unknown>} */

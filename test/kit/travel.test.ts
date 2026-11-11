@@ -65,6 +65,9 @@ function runCheck(files: Record<string, string>, changed: string[], baseFiles: R
   });
 }
 
+/** Text that must never appear in a key. */
+const LEAKS = ["Emil", "health", "secret", "hunter2", "me:pw", "@", "199001011234", "AKIA", "ghp_", "uroot", "uadmin", "S3cr3t", "anna", "Anna", "svensson", "Svensson", "journal", "internal", "notes", "scripts/", "backup"];
+
 const COMMANDS = [
   "npm run build",
   "npx vitest run",
@@ -86,41 +89,78 @@ const COMMANDS = [
 ];
 
 describe("summary keys (lib/summary.mjs)", () => {
-  it("keeps programs, subcommands of known tools, flags and paths; prose, quotes, e-mail, pairs, tokens and digit runs become …", () => {
+  it("keeps the program's name, flags, a tool's subcommand and a script name; everything else becomes …", () => {
     const keys = Object.fromEntries(COMMANDS.map((c) => [c, summary.summaryKey(c)]));
-    expect(keys).toMatchObject({
+    expect(keys).toEqual({
       "npm run build": "npm run build",
-      "npx vitest run": "npx vitest run",
-      "git push origin": "git push origin",
-      "node scripts/sync.mjs --target": "node scripts/sync.mjs --target",
-      "./scripts/check.sh --fix": "./scripts/check.sh --fix",
-      "cat notes.md": "cat notes.md",
-      "docker compose up": "docker compose up",
-      "echo Emil health": "echo …",
-      "Emil ls -la": "… -la",
+      "npx vitest run": "npx vitest …",
+      "git push origin": "git push …",
+      "node scripts/sync.mjs --target": "node … --target",
+      "./scripts/check.sh --fix": "check.sh --fix",
+      "cat notes.md": "cat …",
+      "docker compose up": "docker compose …",
+      "echo Emil health": "echo … …",
+      "Emil ls -la": "… … -la",
       'grep -rn "my secret note"': "grep -rn …",
       "sshpass -p hunter2": "sshpass -p …",
-      "mysql password=hunter2 x": "mysql …",
+      "mysql password=hunter2 x": "mysql … …",
       "curl -u me:pw": "curl -u …",
       "git commit emil@example.com": "git commit …",
       "npm run 199001011234": "npm run …",
+      [COMMANDS[15] ?? ""]: "psql … …",
+      [COMMANDS[16] ?? ""]: "gh auth …",
     });
     for (const c of COMMANDS) {
       const k = summary.summaryKey(c);
       expect(summary.isSummaryKey(k), `${c} -> ${k}`).toBe(true);
-      for (const leak of ["Emil", "health", "secret", "hunter2", "me:pw", "@", "199001011234", "AKIA", "ghp_"]) expect(k).not.toContain(leak);
+      for (const leak of LEAKS) expect(k).not.toContain(leak);
     }
     expect(summary.summaryKey("")).toBe("");
   });
 
-  it("rejects keys summaryKey could not have made", () => {
-    for (const bad of ["", "echo my notes", "Emil ls", "npm run 199001011234", "git push a@b.se", "a … …", "npm run build now", "… …", "x  y"]) {
+  it("keeps no glued flag value, no quoted token and no path from a real shell command (the /security-review cases)", () => {
+    const cases: Record<string, string> = {
+      'mysql -uroot -phunter2 shop -e "select 1"': "mysql … …",
+      "mysqldump -uadmin -pS3cr3tpw shop": "mysqldump … …",
+      "curl -ume:pw https://api.internal.test/v1": "curl … …",
+      "sshpass -phunter2 ssh deploy@host": "sshpass … …",
+      "lftp -uanna,hunter2 ftp.internal.test": "lftp … …",
+      'cat "notes/anna svensson.md"': "cat …",
+      'cat "exports/Anna Svensson journal.md"': "cat …",
+      'git grep "Anna Svensson"': "git grep …",
+      'npm run "anna svensson"': "npm run …",
+      "git grep anna\\ svensson": "git grep …",
+      "cd app && CI=1 npm run test -- --watch=false": "npm run test",
+      "tar -xzvf backup-anna.tar.gz": "tar … …",
+      "grep -rn TODO src": "grep -rn …",
+    };
+    for (const [command, key] of Object.entries(cases)) {
+      expect(ledger.summaryKeyOf(command), command).toBe(key);
+      for (const leak of LEAKS) expect(ledger.summaryKeyOf(command)).not.toContain(leak);
+    }
+    // What the old rule let through is refused by the library and by the check.
+    for (const leaky of ["mysql -uroot -phunter2", "curl -ume:pw https://api.internal.test/v1", "lftp -uanna,hunter2 ftp.internal.test", "cat notes/anna svensson.md", "git grep Anna", "node scripts/sync.mjs --target"]) {
+      expect(summary.isSummaryKey(leaky), leaky).toBe(false);
+      const text = JSON.stringify(validSummary({ commands: [{ key: leaky, exit: 1, attempts: 1, resolved: false }] }));
+      expect(runCheck({ [FILE]: text }, [FILE], OPTED).ok, leaky).toBe(false);
+    }
+  });
+
+  it("rejects keys summaryKeyFromTokens could not have made", () => {
+    for (const bad of ["", "echo my notes", "Emil ls", "npm run 199001011234", "git push a@b.se", "npm run build now", "x  y", "mysql -uroot -phunter2", "git grep Anna", "npx vitest run", "./scripts/check.sh --fix", "cat notes.md", "node -e process.exit"]) {
       expect(summary.isSummaryKey(bad), bad).toBe(false);
+    }
+    for (const good of ["npm run build", "… … -la", "… …", "git push …", "check.sh --fix", "npm run typecheck:kit", "grep -rn …"]) {
+      expect(summary.isSummaryKey(good), good).toBe(true);
     }
   });
 
   it("the seeded check applies the same key rules as the library", () => {
-    const keys = [...COMMANDS.map((c) => summary.summaryKey(c)), "echo my notes", "Emil ls", "npm run 199001011234", "git push a@b.se", "a … …", "… …", "npm run build now", "make test"];
+    const keys = [
+      ...COMMANDS.map((c) => summary.summaryKey(c)),
+      "echo my notes", "Emil ls", "npm run 199001011234", "git push a@b.se", "a … …", "… …", "npm run build now", "make test",
+      "mysql -uroot -phunter2", "curl -ume:pw x", "cat notes/anna.md", "git grep Anna", "npx vitest run", "./scripts/check.sh --fix", "check.sh --fix",
+    ];
     for (const key of keys) {
       const text = JSON.stringify(validSummary({ commands: [{ key, exit: 1, attempts: 1, resolved: false }] }));
       expect(runCheck({ [FILE]: text }, [FILE], OPTED).ok, key).toBe(summary.isSummaryKey(key));
@@ -310,11 +350,21 @@ describe("ledger summary mode", () => {
     expect(r.entry.key).toBe("grep -rn …");
   });
 
+  it("summary mode keeps no glued password or quoted name, through the real hook", () => {
+    const repo = makeRepo({ files: { ".claude/hermod/config.json": JSON.stringify({ version: 1, ledger: { mode: "summary" } }) } });
+    for (const command of ["mysql -uroot -phunter2 shop", 'cat "notes/anna svensson.md"']) {
+      const r = runHook(repo, "post-tool", { cwd: repo.root, ...fail(command, "denied") });
+      expect(r.code, r.stderr).toBe(0);
+    }
+    expect(lines(repo).map((e) => e.key)).toEqual(["mysql … …", "cat …"]);
+    expect(repo.read(".claude/hermod/.local/ledger.jsonl")).not.toMatch(/hunter2|uroot|anna|svensson/);
+  });
+
   it("the hook uses ledger.mode from config.json", () => {
     const repo = makeRepo({ files: { ".claude/hermod/config.json": JSON.stringify({ version: 1, ledger: { mode: "summary" } }) } });
     const r = runHook(repo, "post-tool", { cwd: repo.root, ...fail("echo my health notes", "output with personal text") });
     expect(r.code, r.stderr).toBe(0);
-    expect(lines(repo)).toEqual([expect.objectContaining({ type: "fail", key: "echo …" })]);
+    expect(lines(repo)).toEqual([expect.objectContaining({ type: "fail", key: "echo … …" })]);
     expect(repo.read(".claude/hermod/.local/ledger.jsonl")).not.toMatch(/health|personal/);
   });
 

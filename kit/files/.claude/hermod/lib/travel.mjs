@@ -25,7 +25,8 @@ import path from "node:path";
 import { branch as gitBranch, revParse, runGit } from "./git.mjs";
 import { hermodPath, isPlainObject, readText, writeFileAtomic } from "./io.mjs";
 import { relativeToRoot } from "./paths.mjs";
-import { isSummaryKey, summaryKey } from "./summary.mjs";
+import { summaryKeyOf } from "./ledger.mjs";
+import { isSummaryKey } from "./summary.mjs";
 
 /** The folder for travelling state, relative to the root. */
 export const STATE_DIR = ".claude/hermod/state";
@@ -172,6 +173,17 @@ export function summaryFileName(date, sessionId) {
  */
 
 /**
+ * A ledger entry's summary key: made from its command text when the ledger kept it (full mode), so the shell's
+ * quotes are known; else its key when that already is a summary key (summary mode); "" otherwise.
+ * @param {Record<string, unknown>} e
+ * @returns {string}
+ */
+function travelKey(e) {
+  if (typeof e.cmd === "string" && e.cmd !== "") return summaryKeyOf(e.cmd);
+  return isSummaryKey(e.key) ? String(e.key) : "";
+}
+
+/**
  * Builds a session's summary from its ledger entries. Only skills in `skillNames` (when given) count; a failed
  * command keeps only its summary key, its last exit code, how often it failed and whether it was resolved.
  * @param {{ sessionId: string, date: string, branch?: string | null, entries: ReadonlyArray<Record<string, unknown>>, skillNames?: ReadonlySet<string> }} input
@@ -193,14 +205,14 @@ export function buildSessionSummary(input) {
       else c.views++;
       skills[name] = c;
     } else if (e.type === "fail") {
-      const key = summaryKey(e.key);
+      const key = travelKey(e);
       if (key === "") continue;
       const c = commands.get(key);
       if (!c && commands.size >= MAX_COMMANDS) continue;
       const exit = typeof e.exit === "number" && Number.isInteger(e.exit) && Math.abs(e.exit) <= 255 ? e.exit : null;
       commands.set(key, { key, exit: exit ?? c?.exit ?? null, attempts: Math.min(MAX_COUNT, (c?.attempts ?? 0) + 1), resolved: false });
     } else if (e.type === "resolved") {
-      const c = commands.get(summaryKey(e.key));
+      const c = commands.get(travelKey(e));
       if (c) c.resolved = true;
     }
   }

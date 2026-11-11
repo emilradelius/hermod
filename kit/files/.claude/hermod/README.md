@@ -57,9 +57,10 @@ the curator see your sessions from every device:
    branch. It counts only on the remote default branch (`origin/HEAD`, else `origin/main` or `origin/master`), so
    a marker made during a session does nothing until you merge it. Never add it to a public repository.
 2. From then on, `/reflect` writes `.claude/hermod/state/sessions/<YYYY-MM-DD>-<id8>.json` and commits it with
-   the session's work: the branch, skill uses and views, and each failed command as its key (at most three plain
-   words such as `npm run build`; prose, quoted text, e-mail addresses, `name=value` pairs and tokens become
-   `…`), exit code, attempts and whether it was resolved. Never a full command, its output or a file name. One
+   the session's work: the branch, skill uses and views, and each failed command as its key (at most three words:
+   the program's name, flags, a tool's subcommand and an `npm run` script name, such as `npm run build`; every
+   other argument, quoted text, a value glued to a flag and a path become `…`), exit code, attempts and whether it
+   was resolved. Never a full command, its output or a file name. One
    file per session, so two devices never edit the same file.
 3. The Stop hook asks once, in such a repository, to write the summary, commit the session's work and push it.
    It reads push status from local refs; nothing here fetches or pushes by itself.

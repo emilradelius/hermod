@@ -56,9 +56,11 @@ earlier one, change the old line to say "replaced by …" instead of deleting it
   check `hermod-state` enforces it, and sync never ships a marker. `docs/kit.md` section 11.
 - 2026-11-10, Emil (the open question on the ledger): the ledger gets `ledger.mode: "summary"` (keys and exit codes
   only, no snapshot, no git), so a repository whose command output can hold personal text can turn it back on.
-- 2026-11-10, Claude: a summary key keeps the program, the next words only for tools with subcommands (git, npm,
-  node …) or as flags and paths, and turns everything else into `…`, because a plain word cannot tell a subcommand
-  from prose. A session id must be a UUID. `usage/` is no longer written; old files are still read.
+- 2026-11-11, Claude (after `/security-review`): a summary key keeps only the program's name, flags (`-x` to `-xyz`,
+  `--long-name`), a listed tool's subcommand and an `npm run` script name, from the shell's own tokens; any quoted
+  token, glued flag value (`-pSecret`), path or other argument becomes `…`. Replaces the 2026-11-10 rule that kept
+  any word starting with `-` and any path. A session id must be a UUID. `usage/` is no longer written; old files
+  are still read.
 - 2026-11-10, Claude: every brief shows the newest branch ahead of HEAD with its last commit and Next step (where
   the person left off on another device), as data from an unmerged branch: redacted, injection-scanned, at most
   700 characters (`brief.otherBranches`). The Stop hook asks once, in an opted-in repository, to write the

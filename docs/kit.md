@@ -238,9 +238,9 @@ libraries directly (`test/kit/kit-lib-tests-helpers.ts`). Rules:
 - `.local/` is per machine; a cloud container loses the ledger. Only in a repository that opted in does a summary
   of each session travel, and only once the session commits and pushes it. A new transcript format leaves
   reflect-prep without messages.
-- A summary key keeps up to three plain words; for the listed tools (git, npm, node …) the second and third words
-  are kept as they are, so a password typed as one of them would travel. Known token formats, e-mail addresses,
-  identity numbers, `name=value` pairs and prose for other programs never do.
+- A summary key keeps a lower-case word as a listed tool's subcommand (`git anything`) or as a script name after
+  `npm run`; a secret or a name typed exactly there would travel. Glued flag values, paths, quoted text, e-mail
+  addresses, identity numbers, `name=value` pairs and other arguments never do.
 - The hooks run only when Claude Code starts in the repository (its project folder). A session started above it,
   for example one cloud session over several repositories, gets no brief, no ledger and no Stop check, and
   reflect-prep finds no session; /reflect's evidence then has to be gathered by hand.
@@ -297,13 +297,17 @@ one; the hooks and scripts never write one.
   "commands": [ { "key": "npm run build", "exit": 1, "attempts": 2, "resolved": true } ] }
 ```
 
-A command's **key** (`lib/summary.mjs`) is at most three words. A word may travel only when it starts with a letter
-(after an optional `-`, `--`, `./`, `../`), uses letters, digits and `. _ / : + , -`, is at most 40 characters, has
-no run of 6+ digits or 16+ letters and digits, and is not changed by the redactor. The first word must look like a
-program (lower case); later words stay only for the tools in `TOOLS_WITH_SUBCOMMANDS`, or when they are flags or
-paths. Anything else becomes `…`: `echo my notes` → `echo …`, `grep -rn "x"` → `grep -rn …`. The session id must be
-a UUID (an 8-digit prefix alone could be a date of birth). One file per session means two devices never edit the
-same file, so there are no merge conflicts.
+A command's **key** (`lib/summary.mjs`, built from the shell's own tokens by `summaryKeyOf` in `lib/ledger.mjs`) is
+at most three words, and every word that does not qualify becomes `…`. A quoted or escaped token never qualifies.
+The first word is the program: only its name stays (its folder dropped), in lower case. A later word stays only
+when it is a flag of one to three letters (`-x`, `-rn`) or a long name (`--fix`), when it is the second word and
+the program takes subcommands (`TOOLS_WITH_SUBCOMMANDS`: `git push`, `npm run`), or when it is the third word and
+names a script after a package manager's `run` (`npm run build`). Every kept word is also plain: at most 40
+characters, no run of 6+ digits or 16+ letters and digits, unchanged by the redactor. So a value glued to a flag,
+a path, a file name and prose never travel: `mysql -uroot -pSecret shop` → `mysql … …`, `cat "notes/x y.md"` →
+`cat …`, `node scripts/sync.mjs --target` → `node … --target`. The session id must be a UUID (an 8-digit prefix
+alone could be a date of birth). One file per session means two devices never edit the same file, so there are
+no merge conflicts.
 
 **What enforces it.** The seeded check `hermod-state` (an error) fails a change that contains `.local/` files, a
 new `usage/` file, any file under `state/` while the marker is not on the remote default branch, any file under

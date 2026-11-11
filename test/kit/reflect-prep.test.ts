@@ -347,15 +347,17 @@ describe("reflect-prep: --write-usage", () => {
     tool(repo, bashFail("npm run build", "Error: still failing"));
     tool(repo, bashOk("npm run build"));
     tool(repo, bashFail('echo "dear diary" my plans', "nope"));
+    tool(repo, bashFail("mysql -uroot -phunter2 shop", "Access denied for user 'root'"));
     const r = prep(repo, "--write-usage");
     expect(r.code, r.stderr).toBe(0);
     const [name] = readdirSync(repo.abs(".claude/hermod/state/sessions"));
     const text = readFileSync(repo.abs(`.claude/hermod/state/sessions/${name}`), "utf8");
     expect(JSON.parse(text).commands).toEqual([
       { key: "npm run build", exit: null, attempts: 2, resolved: true },
-      { key: "echo …", exit: null, attempts: 1, resolved: false },
+      { key: "echo … …", exit: null, attempts: 1, resolved: false },
+      { key: "mysql … …", exit: null, attempts: 1, resolved: false },
     ]);
-    for (const leak of [token, "private note", "Emil", "emil@example.com", "diary", "plans", "Error"]) expect(text).not.toContain(leak);
+    for (const leak of [token, "private note", "Emil", "emil@example.com", "diary", "plans", "Error", "hunter2", "uroot", "root"]) expect(text).not.toContain(leak);
   });
 
   it("writes nothing while the marker is only in the working tree, and says why", () => {

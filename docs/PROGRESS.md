@@ -52,8 +52,8 @@ not done or not verified, and one line per recent session. Each decision is one 
 
 ## Not done / not verified
 - State travel (0.3.0): tested with temporary repositories and local remote-tracking refs, not with a real remote
-  or in a live Claude Code session; Windows not tested. A password typed as the second or third word of a listed
-  tool's command would travel in a key (`docs/kit.md`, known limits).
+  or in a live Claude Code session; Windows not tested. A lower-case word in a listed tool's subcommand place, or an
+  `npm run` script name, travels as it is (`docs/kit.md`, known limits).
 - Graphify: Emil ran the build, `god-nodes`, `explain` and `affected` on Windows (0.9.105) and they worked. `query`
   and `path` are not run yet, and no live Claude Code session has used the skill.
 - No live API call was made: `npm run eval:live` needs `HERMOD_LIVE=1` and a key, and was not run. Every model call

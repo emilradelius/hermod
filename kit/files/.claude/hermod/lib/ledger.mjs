@@ -32,7 +32,7 @@ import { appendLine, ensureLocalDir, isPlainObject, localDir, readText, truncate
 import { normalizeRelPath, relativeToRoot } from "./paths.mjs";
 import { redact, redactDeep } from "./redact.mjs";
 import { readSessionJson, writeSessionJson } from "./state.mjs";
-import { summaryKey } from "./summary.mjs";
+import { summaryKeyFromTokens } from "./summary.mjs";
 
 export const LEDGER_FILE = "ledger.jsonl";
 export const ROTATED_FILE = "ledger.1.jsonl";
@@ -114,23 +114,32 @@ export function rotatedLedgerPath(root) {
 const OPERATORS = new Set(["&&", "||", "|", ";", "&", "|&", ">", ">>", "<", "2>", "2>&1", "&>"]);
 
 /**
- * Splits a shell command into words: quotes are removed, shell operators (&&, ||, |, ;, &, redirections)
- * become their own tokens. A rough lexer, good enough for a key; never throws.
- * @param {string} command
- * @returns {string[]}
+ * @typedef {object} ShellToken
+ * @property {string} text the token with its quotes removed
+ * @property {boolean} quoted some of it was quoted or escaped
  */
-export function shellWords(command) {
-  /** @type {string[]} */
+
+/**
+ * Splits a shell command into tokens: quotes are removed (a token remembers that some of it was quoted or
+ * escaped), shell operators (&&, ||, |, ;, &, redirections) become their own tokens. A rough lexer, good enough
+ * for a key; never throws.
+ * @param {string} command
+ * @returns {ShellToken[]}
+ */
+export function shellTokens(command) {
+  /** @type {ShellToken[]} */
   const out = [];
   let word = "";
   let inWord = false;
+  let quoted = false;
   /** @type {string | null} */
   let quote = null;
   const s = String(command ?? "");
   const flush = () => {
-    if (inWord) out.push(word);
+    if (inWord) out.push({ text: word, quoted });
     word = "";
     inWord = false;
+    quoted = false;
   };
   for (let i = 0; i < s.length; i++) {
     const c = s[i];
@@ -143,9 +152,11 @@ export function shellWords(command) {
     if (c === "'" || c === '"') {
       quote = c;
       inWord = true;
+      quoted = true;
     } else if (c === "\\" && i + 1 < s.length) {
       word += s[++i];
       inWord = true;
+      quoted = true;
     } else if (/\s/.test(c)) {
       flush();
     } else if (c === "&" || c === "|" || c === ";" || c === ">" || c === "<") {
@@ -155,12 +166,13 @@ export function shellWords(command) {
         op = word + c;
         word = "";
         inWord = false;
+        quoted = false;
       } else {
         flush();
       }
       while (i + 1 < s.length && /[&|>]/.test(s[i + 1]) && op.length < 4) op += s[++i];
       if (op.endsWith(">&") && /\d/.test(s[i + 1] ?? "")) op += s[++i];
-      out.push(op);
+      out.push({ text: op, quoted: false });
     } else {
       word += c;
       inWord = true;
@@ -168,6 +180,15 @@ export function shellWords(command) {
   }
   flush();
   return out;
+}
+
+/**
+ * Splits a shell command into words: shellTokens without the quote marks.
+ * @param {string} command
+ * @returns {string[]}
+ */
+export function shellWords(command) {
+  return shellTokens(command).map((t) => t.text);
 }
 
 /**
@@ -179,32 +200,57 @@ function isOperator(token) {
 }
 
 /**
- * The normalized command key used to match a failure with its fix: the first words of the first command,
- * after leading `cd <dir> &&` (or `;`) steps and `NAME=value` assignments are removed. `npx`, `npm run`,
- * `pnpm` and similar prefixes stay part of the key. The first command ends at a shell operator (&&, |, ;, a
- * redirection) or at "--" (arguments passed through), so "npm test -- --run" has the key of "npm test".
- * "" when there is nothing left.
- *   "cd app && CI=1 npm run test -- --watch=false" → "npm run test"
+ * The first tokens (at most KEY_TOKENS) of the first command, after leading `cd <dir> &&` (or `;`) steps and
+ * `NAME=value` assignments are removed; the first command ends at a shell operator (&&, |, ;, a redirection) or
+ * at "--" (arguments passed through).
  * @param {string} command
- * @returns {string}
+ * @returns {ShellToken[]}
  */
-export function commandKey(command) {
-  let words = shellWords(String(command ?? "").replace(/\r\n?/g, "\n"));
+export function commandTokens(command) {
+  let tokens = shellTokens(String(command ?? "").replace(/\r\n?/g, "\n"));
   for (;;) {
-    while (words.length > 0 && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[0])) words = words.slice(1);
-    if ((words[0] === "cd" || words[0] === "pushd") && words.length >= 2) {
-      const next = words.findIndex((w, i) => i > 0 && isOperator(w));
-      if (next === -1) return words.slice(0, KEY_TOKENS).join(" ");
-      if (words[next] === "&&" || words[next] === ";") {
-        words = words.slice(next + 1);
+    while (tokens.length > 0 && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[0].text)) tokens = tokens.slice(1);
+    if ((tokens[0]?.text === "cd" || tokens[0]?.text === "pushd") && tokens.length >= 2) {
+      const next = tokens.findIndex((t, i) => i > 0 && isOperator(t.text));
+      if (next === -1) return tokens.slice(0, KEY_TOKENS);
+      if (tokens[next].text === "&&" || tokens[next].text === ";") {
+        tokens = tokens.slice(next + 1);
         continue;
       }
     }
     break;
   }
-  const end = words.findIndex((w) => isOperator(w) || w === "--");
-  const first = end === -1 ? words : words.slice(0, end);
-  return truncateChars(first.slice(0, KEY_TOKENS).join(" "), MAX_KEY_CHARS, "");
+  const end = tokens.findIndex((t) => isOperator(t.text) || t.text === "--");
+  return (end === -1 ? tokens : tokens.slice(0, end)).slice(0, KEY_TOKENS);
+}
+
+/**
+ * The normalized command key used to match a failure with its fix: the first words of the first command
+ * (commandTokens). `npx`, `npm run`, `pnpm` and similar prefixes stay part of the key, so "npm test -- --run" has
+ * the key of "npm test". "" when there is nothing left.
+ *   "cd app && CI=1 npm run test -- --watch=false" → "npm run test"
+ * @param {string} command
+ * @returns {string}
+ */
+export function commandKey(command) {
+  return truncateChars(
+    commandTokens(command)
+      .map((t) => t.text)
+      .join(" "),
+    MAX_KEY_CHARS,
+    "",
+  );
+}
+
+/**
+ * The summary key of a command (lib/summary.mjs): what of it may travel, from its real tokens, so a quoted or
+ * escaped token never does. Pass the redacted command.
+ *   'mysql -uroot -pSecret shop' → "mysql … …"; 'cat "my notes.md"' → "cat …"; "npm run build" → "npm run build"
+ * @param {string} command
+ * @returns {string}
+ */
+export function summaryKeyOf(command) {
+  return summaryKeyFromTokens(commandTokens(command));
 }
 
 // ------------------------------------------------------------------------------------ classification
@@ -520,7 +566,7 @@ export function recordToolEvent(root, input, options = {}) {
   const summaryMode = options.mode === "summary";
   const safeCommand = redact(event.command ?? "", { extraPatterns });
   const fullKey = redact(commandKey(safeCommand), { extraPatterns });
-  const key = summaryMode ? summaryKey(fullKey) : fullKey;
+  const key = summaryMode ? summaryKeyOf(safeCommand) : fullKey;
   const openKey = summaryMode && fullKey !== "" ? `h:${createHash("sha256").update(fullKey).digest("hex").slice(0, 32)}` : fullKey;
   if (event.kind === "success") {
     // Fast path: no open failure for this session → nothing to do, no git.
