@@ -4,7 +4,7 @@
  *
  * Registered for PostToolUse (matcher "Bash|Skill|Read") and PostToolUseFailure (matcher "Bash").
  * - A failed Bash command → a "fail" entry in `.claude/hermod/.local/ledger.jsonl` (command and output tail,
- *   redacted), kept open for its command key.
+ *   redacted; with ledger.mode "summary" only its plain-word key and exit code), kept open for its command key.
  * - A later success of the same key in the same session → a "resolved" entry with the files changed since.
  * - The Skill tool → a "skill" entry; a Read of `.claude/skills/<name>/SKILL.md` → a "skill-view" entry.
  * - Everything else (and interrupted commands) writes nothing. A plain success with no open failure makes no
@@ -33,6 +33,7 @@ export async function main(ctx) {
   const { config } = loadConfig(root);
   if (!config.ledger.enabled) return "";
   recordToolEvent(root, input, {
+    mode: config.ledger.mode,
     maxOutputChars: config.ledger.maxOutputChars,
     maxFileBytes: config.ledger.maxFileBytes,
     extraRedactPatterns: config.ledger.extraRedactPatterns,

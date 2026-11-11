@@ -14,6 +14,11 @@
  *   and it blocks at most ritual.maxBlocksPerSession times per session;
  * - any error is logged to .local/errors.log and the hook exits 0 without blocking (fail open).
  *
+ * In a repository that lets state travel (.claude/hermod/state/ALLOW_COMMIT on the remote default branch,
+ * lib/travel.mjs) and with ritual.travel on, a session that changed something is also asked, once, to write its
+ * summary, commit its work and push it, so the person's next device sees it. Push status comes from local refs
+ * only; the hook never fetches.
+ *
  * Changed files this session: everything that differs between the HEAD saved at session start and the working
  * tree (committed, staged, unstaged and untracked), minus files that were already dirty at session start and
  * still have the same content, and minus files that were dirty at start but not hashed (dirtyPaths without a
@@ -40,6 +45,8 @@ import { matchAny, matchPath, normalizeRelPath, resolveInside } from "../lib/pat
 import { redact } from "../lib/redact.mjs";
 import { listSkills, validateSkill } from "../lib/skills.mjs";
 import { readSessionStart, readStopState, writeStopState } from "../lib/state.mjs";
+import { readLedger } from "../lib/ledger.mjs";
+import { STATE_DIR, findSessionSummary, travelState, upstreamStatus } from "../lib/travel.mjs";
 
 /** The reason text is never longer than this. */
 export const MAX_REASON_CHARS = 1500;
@@ -55,7 +62,7 @@ export const FOOTER = "Hermod blocks once for this; it will not block again for 
 
 /**
  * @typedef {object} Reason
- * @property {"missing" | "check" | "knowledge"} kind
+ * @property {"missing" | "check" | "knowledge" | "travel"} kind
  * @property {string} key stable text the fingerprint is made of (no line numbers)
  * @property {string} text what the reason text shows
  */
@@ -234,11 +241,48 @@ export function formatReason(parts) {
   if (knowledge.length > 0) {
     blocks.push(section("Invalid knowledge files (node .claude/hermod/validate.mjs):", knowledge.map((r) => r.text)));
   }
+  const travel = parts.reasons.filter((r) => r.kind === "travel");
+  if (travel.length > 0) {
+    blocks.push(section("So your next device sees this session (Hermod's state travels in this repository):", travel.map((r) => r.text)));
+  }
   if (parts.warnings.length > 0) blocks.push(section("Warnings (these do not block):", parts.warnings));
   if (parts.remind.length > 0) blocks.push(section("Reminders:", parts.remind));
   const body = redact(blocks.join("\n\n"));
   const room = MAX_REASON_CHARS - FOOTER.length - 2;
   return `${truncateHead(body, room, { marker: "\n…" })}\n\n${FOOTER}`;
+}
+
+/**
+ * What a session still has to do so it reaches the person's other devices, as reasons of kind "travel" (all with
+ * the key "travel", so they block once together). Empty when the repository does not let state travel, or the
+ * session changed nothing. Uses local git only.
+ * @param {string} root
+ * @param {string} sessionId
+ * @param {ReturnType<typeof readSessionStart>} start
+ * @param {readonly string[]} changedFiles
+ * @returns {Reason[]}
+ */
+export function travelReasons(root, sessionId, start, changedFiles) {
+  // Cheapest first: a session that changed nothing is never asked, and most repositories never opted in.
+  const now = head(root);
+  const committed = Boolean(start?.head && now && start.head !== now);
+  if (changedFiles.length === 0 && !committed) return [];
+  if (!travelState(root).allowed) return [];
+  /** @type {string[]} */
+  const todo = [];
+  if (findSessionSummary(root, sessionId) === null && readLedger(root, { session: sessionId }).length > 0) {
+    todo.push("write this session's summary: node .claude/hermod/reflect-prep.mjs --write-usage (skill use and failed commands as plain-word keys, never output)");
+  }
+  const changed = new Set(changedFiles);
+  const dirty = uncommittedFiles(root).filter((f) => changed.has(f) || f.startsWith(`${STATE_DIR}/`));
+  if (dirty.length > 0) todo.push(`commit this session's work (${listPaths(dirty)} not committed yet)`);
+  const up = upstreamStatus(root);
+  if (up.upstream === null) {
+    if (committed || dirty.length > 0) todo.push("push the branch: it has no upstream yet (git push -u origin <branch>)");
+  } else if (up.ahead !== null && up.ahead > 0) {
+    todo.push(`push: ${up.ahead} commit${up.ahead === 1 ? " is" : "s are"} not on ${up.upstream} yet`);
+  }
+  return todo.map((text) => ({ kind: /** @type {const} */ ("travel"), key: "travel", text }));
 }
 
 /**
@@ -309,6 +353,7 @@ export async function decideStop(root, input) {
       }
     }
   }
+  if (ritual.travel) reasons.push(...travelReasons(root, sessionId, start, changedFiles));
   const more = { changedFiles, reasons };
   if (reasons.length === 0) return pass(codeFiles.length > 0 ? "ritual done" : "no code changed", more);
 

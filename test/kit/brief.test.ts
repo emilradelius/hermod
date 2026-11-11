@@ -626,7 +626,7 @@ describe("brief.mjs CLI", () => {
     const j = JSON.parse(r.stdout) as { root: string; budget: number; chars: number; parts: BriefPart[]; text: string };
     expect(j.budget).toBe(8000);
     expect(j.chars).toBe(j.text.length);
-    expect(j.parts.map((p) => p.name)).toEqual(["header", "progress", "lessons", "skills", "branches", "tools"]);
+    expect(j.parts.map((p) => p.name)).toEqual(["header", "progress", "other-branches", "lessons", "skills", "branches", "tools"]);
     for (const p of j.parts) expect(p.chars).toBe(p.text.length);
     expect(j.text).toContain("## Status and next step: docs/PROGRESS.md not found");
   });

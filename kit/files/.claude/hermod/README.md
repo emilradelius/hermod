@@ -8,10 +8,12 @@ tag or commit; it does not update itself.
 What it does:
 
 - **Session brief** (SessionStart hook): prints a short brief at the start of every session: where the
-  work stands (from the progress file), the lessons, an index of the skills, recent branches. The brief is
-  frozen for the whole session, so a resumed or compacted session sees the same text.
+  work stands (from the progress file), newer work on other branches (where you left off on another
+  device), the lessons, an index of the skills, recent branches. The brief is frozen for the whole session, so
+  a resumed or compacted session sees the same text.
 - **Session ledger** (PostToolUse hook): notes failed commands and the fix that resolved them, and which
-  skills were used, in a local file. Secrets are redacted before anything is written.
+  skills were used, in a local file. Secrets are redacted before anything is written. With
+  `"ledger": { "mode": "summary" }` it keeps only each failed command's plain-word key and exit code.
 - **End-of-session ritual** (Stop hook): when code changed but the progress file did not, or a check or a
   validation fails, it asks Claude to finish the job before stopping. It blocks at most once per reason and
   never more than `ritual.maxBlocksPerSession` times per session.
@@ -28,9 +30,10 @@ What it does:
 | `.claude/hermod/config.json` | this repository | Created once from a default if missing, never overwritten. |
 | `.claude/hermod/LESSONS.md` | this repository | Created once (header only), never overwritten. |
 | `.claude/hermod/checks/` | this repository | `checks/README.md` is created once; the checks are yours. |
-| `.claude/hermod/usage/`, `history/`, `archive/` | this repository | Never touched by sync. |
+| `.claude/hermod/state/` | this repository, once a person opts in | Never touched by sync. `ALLOW_COMMIT` is made by a person only; `sessions/` holds one summary per session (below). |
+| `.claude/hermod/usage/` (older usage files, read only), `history/`, `archive/` | this repository | Never touched by sync. |
 | Your own skills in `.claude/skills/` | this repository | Never touched by sync. |
-| `.claude/hermod/.local/` | this machine | Never committed (it holds a `.gitignore` with `*`). Ledger, session state and `errors.log`. Safe to delete. |
+| `.claude/hermod/.local/` | this machine | Never committed (it holds a `.gitignore` with `*`, and the `hermod-state` check refuses it). Ledger, session state and `errors.log`. Safe to delete. |
 | Hook entries in `.claude/settings.json` whose command contains `/.claude/hermod/hooks/` | the kit | Replaced by the kit's entries. Every other setting and hook is kept as it is. |
 
 ## Nothing here changes your setup by itself
@@ -43,6 +46,30 @@ What it does:
   when a person runs it.
 - Hooks fail open: if a hook hits an error it writes one line to `.claude/hermod/.local/errors.log` (kept
   under 100 KB) and exits without output, so a session is never broken or blocked by a bug in Hermod.
+
+## Following you between devices
+
+Everything in `.local/` stays on the device where it was made; a cloud session loses it when its container ends.
+In a **private** repository you can let a small summary of each session travel through git, so `/reflect` and
+the curator see your sessions from every device:
+
+1. Create `.claude/hermod/state/ALLOW_COMMIT` (any text, for example `private`) and merge it to the default
+   branch. It counts only on the remote default branch (`origin/HEAD`, else `origin/main` or `origin/master`), so
+   a marker made during a session does nothing until you merge it. Never add it to a public repository.
+2. From then on, `/reflect` writes `.claude/hermod/state/sessions/<YYYY-MM-DD>-<id8>.json` and commits it with
+   the session's work: the branch, skill uses and views, and each failed command as its key (at most three words:
+   the program's name, flags, a tool's subcommand and an `npm run` script name, such as `npm run build`; every
+   other argument, quoted text, a value glued to a flag and a path become `…`), exit code, attempts and whether it
+   was resolved. Never a full command, its output or a file name. One
+   file per session, so two devices never edit the same file.
+3. The Stop hook asks once, in such a repository, to write the summary, commit the session's work and push it.
+   It reads push status from local refs; nothing here fetches or pushes by itself.
+
+The seeded check `hermod-state` enforces this: it fails a change that contains `.local/` files, any file under
+`state/` before the marker is on the default branch, any other file under `state/`, or a summary that breaks
+these rules. In every repository, public or not, the brief shows the newest branch with work that this branch
+does not have yet, with its last commit and the first lines of its progress file's Next step (labelled as data
+from an unmerged branch; `brief.otherBranches: 0` turns it off).
 
 ## Checks and their trust model
 
@@ -67,7 +94,8 @@ node .claude/hermod/check.mjs [--base REF]           # run the repository's chec
 node .claude/hermod/check.mjs --self-test            # run every check's own examples
 node .claude/hermod/recall.mjs "query" [--limit N] [--source progress|decisions|git|history|all]
 node .claude/hermod/curator.mjs [--out FILE]         # report on skill and lesson health (never edits)
-node .claude/hermod/reflect-prep.mjs [--session ID]  # evidence bundle for /reflect, in .local/reflect/
+node .claude/hermod/reflect-prep.mjs [--session ID] [--write-usage]  # evidence bundle for /reflect, in .local/reflect/;
+                                                     # --write-usage also writes the session summary (opted-in repos)
 node .claude/hermod/brief.mjs                        # the brief a new session would get
 ```
 

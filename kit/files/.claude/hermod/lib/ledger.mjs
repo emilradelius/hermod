@@ -16,8 +16,15 @@
  *
  * Rotation: when appending would take ledger.jsonl over maxFileBytes, it is renamed to ledger.1.jsonl
  * (replacing an older one) and a fresh file is started.
+ *
+ * Summary mode (config ledger.mode "summary"): no command text, output or file names are ever written, not even
+ * here on the device. A failure is { id, ts, session, type: "fail", key, exit } and a resolution
+ * { id, ts, session, type: "resolved", failureId, attempts, key }, where key is the summary key (lib/summary.mjs:
+ * at most three plain words). No snapshot is taken, so no git call is made. An open failure is kept under a hash of
+ * its full redacted key, so failures match exactly and no command text is stored. Skill entries are the same as in
+ * full mode. This is the mode for a repository whose command output can hold personal text.
  */
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { hashFiles, head, isSafeRef, runGit, uncommittedFiles } from "./git.mjs";
@@ -25,6 +32,7 @@ import { appendLine, ensureLocalDir, isPlainObject, localDir, readText, truncate
 import { normalizeRelPath, relativeToRoot } from "./paths.mjs";
 import { redact, redactDeep } from "./redact.mjs";
 import { readSessionJson, writeSessionJson } from "./state.mjs";
+import { summaryKeyFromTokens } from "./summary.mjs";
 
 export const LEDGER_FILE = "ledger.jsonl";
 export const ROTATED_FILE = "ledger.1.jsonl";
@@ -51,6 +59,7 @@ const MAX_SKILL_CHARS = 200;
  * @property {ReadonlyArray<string | RegExp>} [extraRedactPatterns] config ledger.extraRedactPatterns
  * @property {string} [skillsDir] config skills.dir (for skill views)
  * @property {Date} [now]
+ * @property {"full" | "summary"} [mode] config ledger.mode: "summary" keeps only the summary key and exit code
  */
 
 /**
@@ -105,23 +114,32 @@ export function rotatedLedgerPath(root) {
 const OPERATORS = new Set(["&&", "||", "|", ";", "&", "|&", ">", ">>", "<", "2>", "2>&1", "&>"]);
 
 /**
- * Splits a shell command into words: quotes are removed, shell operators (&&, ||, |, ;, &, redirections)
- * become their own tokens. A rough lexer, good enough for a key; never throws.
- * @param {string} command
- * @returns {string[]}
+ * @typedef {object} ShellToken
+ * @property {string} text the token with its quotes removed
+ * @property {boolean} quoted some of it was quoted or escaped
  */
-export function shellWords(command) {
-  /** @type {string[]} */
+
+/**
+ * Splits a shell command into tokens: quotes are removed (a token remembers that some of it was quoted or
+ * escaped), shell operators (&&, ||, |, ;, &, redirections) become their own tokens. A rough lexer, good enough
+ * for a key; never throws.
+ * @param {string} command
+ * @returns {ShellToken[]}
+ */
+export function shellTokens(command) {
+  /** @type {ShellToken[]} */
   const out = [];
   let word = "";
   let inWord = false;
+  let quoted = false;
   /** @type {string | null} */
   let quote = null;
   const s = String(command ?? "");
   const flush = () => {
-    if (inWord) out.push(word);
+    if (inWord) out.push({ text: word, quoted });
     word = "";
     inWord = false;
+    quoted = false;
   };
   for (let i = 0; i < s.length; i++) {
     const c = s[i];
@@ -134,9 +152,11 @@ export function shellWords(command) {
     if (c === "'" || c === '"') {
       quote = c;
       inWord = true;
+      quoted = true;
     } else if (c === "\\" && i + 1 < s.length) {
       word += s[++i];
       inWord = true;
+      quoted = true;
     } else if (/\s/.test(c)) {
       flush();
     } else if (c === "&" || c === "|" || c === ";" || c === ">" || c === "<") {
@@ -146,12 +166,13 @@ export function shellWords(command) {
         op = word + c;
         word = "";
         inWord = false;
+        quoted = false;
       } else {
         flush();
       }
       while (i + 1 < s.length && /[&|>]/.test(s[i + 1]) && op.length < 4) op += s[++i];
       if (op.endsWith(">&") && /\d/.test(s[i + 1] ?? "")) op += s[++i];
-      out.push(op);
+      out.push({ text: op, quoted: false });
     } else {
       word += c;
       inWord = true;
@@ -159,6 +180,15 @@ export function shellWords(command) {
   }
   flush();
   return out;
+}
+
+/**
+ * Splits a shell command into words: shellTokens without the quote marks.
+ * @param {string} command
+ * @returns {string[]}
+ */
+export function shellWords(command) {
+  return shellTokens(command).map((t) => t.text);
 }
 
 /**
@@ -170,32 +200,57 @@ function isOperator(token) {
 }
 
 /**
- * The normalized command key used to match a failure with its fix: the first words of the first command,
- * after leading `cd <dir> &&` (or `;`) steps and `NAME=value` assignments are removed. `npx`, `npm run`,
- * `pnpm` and similar prefixes stay part of the key. The first command ends at a shell operator (&&, |, ;, a
- * redirection) or at "--" (arguments passed through), so "npm test -- --run" has the key of "npm test".
- * "" when there is nothing left.
- *   "cd app && CI=1 npm run test -- --watch=false" → "npm run test"
+ * The first tokens (at most KEY_TOKENS) of the first command, after leading `cd <dir> &&` (or `;`) steps and
+ * `NAME=value` assignments are removed; the first command ends at a shell operator (&&, |, ;, a redirection) or
+ * at "--" (arguments passed through).
  * @param {string} command
- * @returns {string}
+ * @returns {ShellToken[]}
  */
-export function commandKey(command) {
-  let words = shellWords(String(command ?? "").replace(/\r\n?/g, "\n"));
+export function commandTokens(command) {
+  let tokens = shellTokens(String(command ?? "").replace(/\r\n?/g, "\n"));
   for (;;) {
-    while (words.length > 0 && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[0])) words = words.slice(1);
-    if ((words[0] === "cd" || words[0] === "pushd") && words.length >= 2) {
-      const next = words.findIndex((w, i) => i > 0 && isOperator(w));
-      if (next === -1) return words.slice(0, KEY_TOKENS).join(" ");
-      if (words[next] === "&&" || words[next] === ";") {
-        words = words.slice(next + 1);
+    while (tokens.length > 0 && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[0].text)) tokens = tokens.slice(1);
+    if ((tokens[0]?.text === "cd" || tokens[0]?.text === "pushd") && tokens.length >= 2) {
+      const next = tokens.findIndex((t, i) => i > 0 && isOperator(t.text));
+      if (next === -1) return tokens.slice(0, KEY_TOKENS);
+      if (tokens[next].text === "&&" || tokens[next].text === ";") {
+        tokens = tokens.slice(next + 1);
         continue;
       }
     }
     break;
   }
-  const end = words.findIndex((w) => isOperator(w) || w === "--");
-  const first = end === -1 ? words : words.slice(0, end);
-  return truncateChars(first.slice(0, KEY_TOKENS).join(" "), MAX_KEY_CHARS, "");
+  const end = tokens.findIndex((t) => isOperator(t.text) || t.text === "--");
+  return (end === -1 ? tokens : tokens.slice(0, end)).slice(0, KEY_TOKENS);
+}
+
+/**
+ * The normalized command key used to match a failure with its fix: the first words of the first command
+ * (commandTokens). `npx`, `npm run`, `pnpm` and similar prefixes stay part of the key, so "npm test -- --run" has
+ * the key of "npm test". "" when there is nothing left.
+ *   "cd app && CI=1 npm run test -- --watch=false" → "npm run test"
+ * @param {string} command
+ * @returns {string}
+ */
+export function commandKey(command) {
+  return truncateChars(
+    commandTokens(command)
+      .map((t) => t.text)
+      .join(" "),
+    MAX_KEY_CHARS,
+    "",
+  );
+}
+
+/**
+ * The summary key of a command (lib/summary.mjs): what of it may travel, from its real tokens, so a quoted or
+ * escaped token never does. Pass the redacted command.
+ *   'mysql -uroot -pSecret shop' → "mysql … …"; 'cat "my notes.md"' → "cat …"; "npm run build" → "npm run build"
+ * @param {string} command
+ * @returns {string}
+ */
+export function summaryKeyOf(command) {
+  return summaryKeyFromTokens(commandTokens(command));
 }
 
 // ------------------------------------------------------------------------------------ classification
@@ -505,16 +560,34 @@ export function recordToolEvent(root, input, options = {}) {
   }
 
   // The key is made from the redacted command (and redacted again), so a secret can never reach it, and the
-  // same command always gives the same key.
+  // same command always gives the same key. Summary mode keeps only its plain words (lib/summary.mjs).
+  // An open failure is matched on the full key; in summary mode only its hash is kept on the device, so commands
+  // whose summary keys look alike ("grep -rn …") never resolve each other.
+  const summaryMode = options.mode === "summary";
   const safeCommand = redact(event.command ?? "", { extraPatterns });
-  const key = redact(commandKey(safeCommand), { extraPatterns });
+  const fullKey = redact(commandKey(safeCommand), { extraPatterns });
+  const key = summaryMode ? summaryKeyOf(safeCommand) : fullKey;
+  const openKey = summaryMode && fullKey !== "" ? `h:${createHash("sha256").update(fullKey).digest("hex").slice(0, 32)}` : fullKey;
   if (event.kind === "success") {
     // Fast path: no open failure for this session → nothing to do, no git.
-    if (rawSession === null || key === "") return { ...none, why: "success" };
+    if (rawSession === null || openKey === "") return { ...none, why: "success" };
     const open = readOpenFailures(root, rawSession);
     if (open.length === 0) return { ...none, why: "success" };
-    const match = open.find((f) => f.key === key);
+    const match = open.find((f) => f.key === openKey);
     if (!match) return { ...none, why: "success (no open failure for this key)" };
+    if (summaryMode) {
+      const entry = appendEntry(
+        root,
+        { id: newId(), ts, session, type: "resolved", failureId: match.id, attempts: match.attempts, key },
+        options,
+      );
+      writeOpenFailures(
+        root,
+        rawSession,
+        open.filter((f) => f !== match),
+      );
+      return { action: "resolved", entry, why: event.why, usedGit: false };
+    }
     const changedFiles = changedSinceFailure(root, match);
     const entry = appendEntry(
       root,
@@ -544,27 +617,35 @@ export function recordToolEvent(root, input, options = {}) {
   const id = newId();
   const entry = appendEntry(
     root,
-    {
-      id,
-      ts,
-      session,
-      type: "fail",
-      key,
-      cmd: truncateChars(safeCommand, MAX_CMD_CHARS),
-      exit: event.exit ?? null,
-      out: redactedTail(event.output ?? "", options.maxOutputChars ?? 2000, extraPatterns),
-    },
+    summaryMode
+      ? { id, ts, session, type: "fail", key, exit: event.exit ?? null }
+      : {
+          id,
+          ts,
+          session,
+          type: "fail",
+          key,
+          cmd: truncateChars(safeCommand, MAX_CMD_CHARS),
+          exit: event.exit ?? null,
+          out: redactedTail(event.output ?? "", options.maxOutputChars ?? 2000, extraPatterns),
+        },
     options,
   );
   let usedGit = false;
-  if (rawSession !== null && key !== "") {
-    usedGit = true;
-    const dirty = uncommittedFiles(root).slice(0, MAX_DIRTY_PATHS);
-    const snapshot = hashFiles(root, dirty.slice(0, MAX_SNAPSHOT_FILES));
+  if (rawSession !== null && openKey !== "") {
     const open = readOpenFailures(root, rawSession);
-    const previous = open.find((f) => f.key === key);
+    const previous = open.find((f) => f.key === openKey);
     const rest = open.filter((f) => f !== previous);
-    rest.push({ id, key, ts, attempts: (previous?.attempts ?? 0) + 1, head: head(root), snapshot, dirty });
+    const attempts = (previous?.attempts ?? 0) + 1;
+    if (summaryMode) {
+      // No snapshot: summary mode never records which files changed, so it needs no git.
+      rest.push({ id, key: openKey, ts, attempts, head: null, snapshot: {}, dirty: [] });
+    } else {
+      usedGit = true;
+      const dirty = uncommittedFiles(root).slice(0, MAX_DIRTY_PATHS);
+      const snapshot = hashFiles(root, dirty.slice(0, MAX_SNAPSHOT_FILES));
+      rest.push({ id, key, ts, attempts, head: head(root), snapshot, dirty });
+    }
     writeOpenFailures(root, rawSession, rest);
   }
   return { action: "fail", entry, why: event.why, usedGit };
