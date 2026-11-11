@@ -4,42 +4,35 @@ Short on purpose, so a new session can read it whole: the current status, the ne
 not done or not verified, and one line per recent session. Each decision is one line in `docs/decisions.md`.
 
 ## Status (2026-11-11)
-- **Releases**: 0.1.0 (`32589df`, tagged `v0.1.0`), 0.2.0 (`8df3d2f`, tagged `v0.2.0`: the optional graphify
-  skill) and 0.3.0 (`2143d5c`, PR #7, not tagged: state travel, below). 0.3.1 makes the opt-in read `origin/HEAD`
-  the way the `hermod-state` check does.
-- **Part A, the kit, is built**: session brief, lessons and skills with a validator,
-  the Stop ritual check, the session ledger, `/reflect` and its evidence bundle, lessons as checks, recall (BM25),
-  the curator, and the pinned sync with opt-in library skills. 795 kit tests. `docs/kit.md`.
-- **Part B, the runtime, is built**: storage (memory, SQLite, Postgres), safety, the model client, tools, the loop,
-  memory, skills and proposals with grounding, learning (review, triggers, curator), modes, scheduler, channels,
-  the invariant suites and the eval harness. `docs/runtime.md`.
-- **Three rounds of independent attacks** on the guards (taint, memory writes, side effects, costs, modes): every
-  finding is fixed with mutation-checked tests.
-- **Reviews (0.1.0):** `/code-review` (max) found 14 problems, all fixed, and an independent verifier re-checked the
-  runtime fixes. `/security-review`: no high-confidence vulnerabilities.
-- Whole suite with Postgres: 93 files, 2,599 tests; evals 19/19; CI green.
-- **Installed and merged** in Emil's three target repositories (2026-11-09), each pinned to `32589df`: the kit in
-  all three, the runtime vendored into one app, and an agent plan for another, which waits for Emil's answers. This
-  repository is public, so their names and details stay in their own progress logs.
-
-- **Graphify** (2026-11-10, PR #3, merged): an unmodified copy (Apache-2.0, upstream `5eedffa`, 0.9.105) is in Emil's
-  private repository `graphify-kit`. The optional skill `graphify` (`--skills graphify`) and the seeded check
-  `graphify-private` join it to the kit; the graph lives under `.claude/hermod/.local/` by default, or is committed
-  in private repositories that opt in (`.claude/hermod/graph/ALLOW_COMMIT`) so it follows Emil between devices. `docs/kit.md` section 10.
-- **State that follows you** (0.3.0, design approved by Emil): a private repository opts in with
-  `.claude/hermod/state/ALLOW_COMMIT` (counts only on the remote default branch); then one summary per session
-  travels (skill use; failed commands as plain-word keys, never text or output). `ledger.mode: "summary"`, the
-  newest other branch in the brief, a Stop reminder and the check `hermod-state`. `docs/kit.md` section 11.
+- **Releases**: 0.1.0 (`32589df`, tag `v0.1.0`), 0.2.0 (`8df3d2f`, tag `v0.2.0`: the graphify skill), 0.3.0
+  (`2143d5c`, PR #7: state travel) and 0.3.1 (`ca5d679`, PR #8: the opt-in reads `origin/HEAD` the way the check
+  does). The tag `v0.3.1` waits for Emil.
+- **Part A, the kit** (`docs/kit.md`): the brief, lessons and skills with a validator, the Stop ritual, the ledger,
+  `/reflect`, lessons as checks, recall, the curator, pinned sync with opt-in library skills, Graphify (section 10)
+  and state that follows you between devices (section 11).
+- **Part B, the runtime** (`docs/runtime.md`): storage (memory, SQLite, Postgres), safety, the model client, tools,
+  the loop, memory, skills and proposals, learning, modes, scheduler, channels, invariant suites and evals.
+- **Hardening and reviews**: three rounds of independent attacks, each finding fixed with mutation-checked tests;
+  `/code-review` and `/security-review` on 0.1.0 and on 0.3.0, every finding fixed. `npm run check` (2026-11-11,
+  without Postgres): 94 files, 2,538 tests; evals 19/19; CI green.
+- **Targets** (three, all merged): each pinned to 0.3.1; the runtime (0.1.0) vendored into one app; an agent plan for
+  another waits for Emil. The two private ones opted in to state travel and a committed code map; the public one
+  never opts in. This repository is public, so their names and details stay in their own progress logs.
+- **Graphify**: an unmodified copy (Apache-2.0, upstream `5eedffa`, 0.9.105) is in Emil's private `graphify-kit`;
+  the optional skill `graphify` and the seeded check `graphify-private` join it to the kit.
+- **Control Room** (2026-11-11): a private claude.ai page for Emil, with no server, account or token. It shows his
+  live Claude Code sessions (his own sign-in, through the Claude Code connector), how the repositories connect, each
+  repository's state (a snapshot Claude writes into the page's data) and a code map viewer that reads a
+  `graph.json` in the browser only.
 
 ## Next step
-- 0.3.1: merge (Emil: "I approve everything merge"), sync its merge commit into the three targets, then the opt-in
-  pull requests in the two private ones (the state marker and the graph marker; the summary-mode ledger rides the
-  sync where the ledger was off). The public target never opts in. Emil tags `v0.3.1` on GitHub on the merge
-  commit (0.3.0 needs no tag of its own: no target is pinned to it).
-- Graphify (PRs #3 and #5 merged, 0.2.0 synced into two targets): run `query` and `path` once; build a graph in one private repository and check
-  `graph.json` for the home path; merge `.claude/hermod/graph/ALLOW_COMMIT` there as its own pull request, then the
-  graph. Then tag a release and sync with `--skills graphify`. Emil's other-device and cloud-session setup (install
-  graphify there) is still to do.
+- Emil: tag `v0.3.1` on GitHub on `ca5d679` (0.3.0 needs no tag of its own: no target is pinned to it). Then build
+  the code map once in each opted-in private repository (the `graphify` skill), search `graph.json` for the user name
+  and for `\\` first, and commit it there in a pull request if neither is there.
+- After a change to the kit or to a target's state, Claude refreshes the Control Room's repository details (the
+  page's data), so the page stays true.
+- Graphify: the two private targets opted in (their markers are merged). Still to do: run `query` and `path` once,
+  and Emil's other-device and cloud-session setup (install graphify there).
 - A later kit or runtime change reaches the targets the way 0.1.0 did, each in its own pull request there:
   `node scripts/sync.mjs --target <repo> --ref <tag or full sha>` and
   `node scripts/vendor-runtime.mjs --target <app>/vendor/hermod --ref <tag or full sha>`.
@@ -47,12 +40,19 @@ not done or not verified, and one line per recent session. Each decision is one 
   Code cloud session is refused a tag push (HTTP 403), though its branch pushes work.
 
 ## Open questions
+- Two places could show the code map: the Control Room (on claude.ai, no setup; Emil opens a `graph.json`) and a
+  separate sign-in page another session built for the maps (not deployed; it needs a GitHub sign-in app, two tokens
+  and a hosting project, and builds the maps in GitHub Actions). Keep both, or pick one?
 - Unattended runs: the 2026-11-05 decision let them add memories to an add-only store. The hardening made the
   built-in memory tool propose even an add in an unattended run (a job's input is often outside text). Keep the
   stricter rule, or allow adds again from unattended runs whose input is all trusted?
 - An empty root commit was pushed to `main` so the empty repository had a base branch for this pull request.
 
 ## Not done / not verified
+- Nothing has travelled yet: the first session summary comes from the next `/reflect` in an opted-in repository,
+  and no code map is committed.
+- Control Room: the live session list was not tried through the connector (the page was looked at outside
+  claude.ai); the repository details are a snapshot, not live.
 - State travel (0.3.0): tested with temporary repositories and local remote-tracking refs, not with a real remote
   or in a live Claude Code session; Windows not tested. A lower-case word in a listed tool's subcommand place, or an
   `npm run` script name, travels as it is (`docs/kit.md`, known limits).
@@ -71,6 +71,8 @@ not done or not verified, and one line per recent session. Each decision is one 
   tooling (dev-time, no runtime exposure). Revisit when ESLint and typescript-eslint move past it.
 
 ## Recent sessions
+- 2026-11-11: 0.3.1 merged (PR #8) and synced into all three targets (merged); the two private ones opted in
+  (merged); the Control Room page for Emil.
 - 2026-11-11: kit 0.3.1: the opt-in reads `origin/HEAD` the way the `hermod-state` check does (when it is set, only its
   branch counts, also when that branch is gone), so the Stop reminder never asks for a commit the check refuses.
 - 2026-11-10: kit 0.3.0: state that follows you between devices, opt-in for private repositories (session summaries,
