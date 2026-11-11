@@ -16,8 +16,8 @@ not done or not verified, and one line per recent session. Each decision is one 
   `/code-review` and `/security-review` on 0.1.0 and on 0.3.0, every finding fixed. `npm run check` (2026-11-11,
   without Postgres): 94 files, 2,538 tests; evals 19/19; CI green.
 - **Targets** (three, all merged): each pinned to 0.3.1; the runtime (0.1.0) vendored into one app; an agent plan for
-  another waits for Emil. The two private ones opted in to state travel and a committed code map; the public one
-  never opts in. This repository is public, so their names and details stay in their own progress logs.
+  another waits for Emil. Of the two private ones, one has opted in to state travel and a committed code map; the
+  other's opt-in pull request waits for CI. The public one never opts in. This repository is public, so their names and details stay in their own progress logs.
 - **Graphify**: an unmodified copy (Apache-2.0, upstream `5eedffa`, 0.9.105) is in Emil's private `graphify-kit`;
   the optional skill `graphify` and the seeded check `graphify-private` join it to the kit.
 - **Control Room** (2026-11-11): a private claude.ai page for Emil, with no server, account or token. It shows his
@@ -31,8 +31,9 @@ not done or not verified, and one line per recent session. Each decision is one 
   and for `\\` first, and commit it there in a pull request if neither is there.
 - After a change to the kit or to a target's state, Claude refreshes the Control Room's repository details (the
   page's data), so the page stays true.
-- Graphify: the two private targets opted in (their markers are merged). Still to do: run `query` and `path` once,
-  and Emil's other-device and cloud-session setup (install graphify there).
+- Merge the second private target's opt-in once its CI completes (on 2026-11-11 GitHub's runners could not reach
+  the Ubuntu mirror, and the job ran out of time).
+- Graphify: run `query` and `path` once; Emil's other-device and cloud-session setup (install graphify there).
 - A later kit or runtime change reaches the targets the way 0.1.0 did, each in its own pull request there:
   `node scripts/sync.mjs --target <repo> --ref <tag or full sha>` and
   `node scripts/vendor-runtime.mjs --target <app>/vendor/hermod --ref <tag or full sha>`.
@@ -71,8 +72,8 @@ not done or not verified, and one line per recent session. Each decision is one 
   tooling (dev-time, no runtime exposure). Revisit when ESLint and typescript-eslint move past it.
 
 ## Recent sessions
-- 2026-11-11: 0.3.1 merged (PR #8) and synced into all three targets (merged); the two private ones opted in
-  (merged); the Control Room page for Emil.
+- 2026-11-11: 0.3.1 merged (PR #8) and synced into all three targets (merged); one private target opted in, the
+  other's opt-in waits for CI; the Control Room page for Emil.
 - 2026-11-11: kit 0.3.1: the opt-in reads `origin/HEAD` the way the `hermod-state` check does (when it is set, only its
   branch counts, also when that branch is gone), so the Stop reminder never asks for a commit the check refuses.
 - 2026-11-10: kit 0.3.0: state that follows you between devices, opt-in for private repositories (session summaries,
