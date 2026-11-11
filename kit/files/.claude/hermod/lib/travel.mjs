@@ -58,24 +58,23 @@ const REMOTE_DEFAULTS = ["refs/remotes/origin/main", "refs/remotes/origin/master
 // ------------------------------------------------------------------------------------------- opting in
 
 /**
- * The remote default branch as a full ref (refs/remotes/origin/HEAD's target, else origin/main, else
- * origin/master), or null. A local branch never counts: a session can commit to one without anyone merging.
+ * The remote default branch as a full ref, or null. When refs/remotes/origin/HEAD is set it decides alone: its
+ * branch, or null when that branch is gone (the hermod-state check applies the same rule). Only without it do
+ * origin/main and then origin/master count. A local branch never counts: a session can commit to one without
+ * anyone merging.
  * @param {string} root
  * @returns {string | null}
  */
 export function remoteDefaultRef(root) {
-  const r = runGit(root, ["for-each-ref", "--format=%(refname)%00%(symref)", "refs/remotes/origin/HEAD", ...REMOTE_DEFAULTS]);
+  // symbolic-ref reads origin/HEAD even when its branch is gone; for-each-ref would skip it as broken.
+  const head = runGit(root, ["symbolic-ref", "-q", "refs/remotes/origin/HEAD"]);
+  const target = head.ok ? head.stdout.trim() : "";
+  if (target !== "") {
+    return target.startsWith("refs/remotes/origin/") && !target.endsWith("/HEAD") && revParse(root, target) ? target : null;
+  }
+  const r = runGit(root, ["for-each-ref", "--format=%(refname)", ...REMOTE_DEFAULTS]);
   if (!r.ok) return null;
-  /** @type {Map<string, string>} */
-  const refs = new Map();
-  for (const line of r.stdout.split("\n")) {
-    const [name, symref = ""] = line.split("\0");
-    if (name) refs.set(name, symref);
-  }
-  const target = refs.get("refs/remotes/origin/HEAD");
-  if (target && target.startsWith("refs/remotes/origin/") && !target.endsWith("/HEAD") && (refs.has(target) || revParse(root, target))) {
-    return target;
-  }
+  const refs = new Set(r.stdout.split("\n").filter((l) => l !== ""));
   return REMOTE_DEFAULTS.find((c) => refs.has(c)) ?? null;
 }
 
