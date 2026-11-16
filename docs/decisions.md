@@ -49,7 +49,9 @@ earlier one, change the old line to say "replaced by …" instead of deleting it
   for multi-step agentic work), `low` for background work. `src/model/models.ts`.
 
 ## How the kit works (Claude, within the plan)
-- 2026-11-11, Claude (Emil away; the safest option, written under Open questions): the page Emil asked for, to see
+- 2026-11-16, Emil ("a real web app, not a claude app"): the Control Room is a private web app of its own (Next.js on
+  Vercel, GitHub sign-in for one account, a read-only token), in its own private repository. Replaces the next line.
+- 2026-11-11, Claude (replaced by the line above): the page Emil asked for, to see
   the whole system, is a private claude.ai page (the Control Room): no server, account or token. Live data comes only
   from his own Claude Code sessions with his sign-in; the repository details are a snapshot Claude writes into the
   page's own data; a code map is read from a file in the browser and never uploaded or stored.

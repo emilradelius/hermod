@@ -20,17 +20,14 @@ not done or not verified, and one line per recent session. Each decision is one 
   other's opt-in pull request waits for CI. The public one never opts in. This repository is public, so their names and details stay in their own progress logs.
 - **Graphify**: an unmodified copy (Apache-2.0, upstream `5eedffa`, 0.9.105) is in Emil's private `graphify-kit`;
   the optional skill `graphify` and the seeded check `graphify-private` join it to the kit.
-- **Control Room** (2026-11-11): a private claude.ai page for Emil, with no server, account or token. It shows his
-  live Claude Code sessions (his own sign-in, through the Claude Code connector), how the repositories connect, each
-  repository's state (a snapshot Claude writes into the page's data) and a code map viewer that reads a
-  `graph.json` in the browser only.
+- **Control Room** (live 2026-11-16): a private web app of its own, in its own private repository (Next.js on Vercel,
+  GitHub sign-in for one account, a read-only token). It reads each repository's Hermod and Graphify state live from
+  GitHub, shows what needs Emil, and draws the committed code maps. It replaced the claude.ai page of 2026-11-11.
 
 ## Next step
 - Emil: tag `v0.3.1` on GitHub on `ca5d679` (0.3.0 needs no tag of its own: no target is pinned to it). Then build
   the code map once in each opted-in private repository (the `graphify` skill), search `graph.json` for the user name
   and for `\\` first, and commit it there in a pull request if neither is there.
-- After a change to the kit or to a target's state, Claude refreshes the Control Room's repository details (the
-  page's data), so the page stays true.
 - Merge the second private target's opt-in once its CI completes (on 2026-11-11 GitHub's runners could not reach
   the Ubuntu mirror, and the job ran out of time).
 - Graphify: run `query` and `path` once; Emil's other-device and cloud-session setup (install graphify there).
@@ -41,9 +38,6 @@ not done or not verified, and one line per recent session. Each decision is one 
   Code cloud session is refused a tag push (HTTP 403), though its branch pushes work.
 
 ## Open questions
-- Two places could show the code map: the Control Room (on claude.ai, no setup; Emil opens a `graph.json`) and a
-  separate sign-in page another session built for the maps (not deployed; it needs a GitHub sign-in app, two tokens
-  and a hosting project, and builds the maps in GitHub Actions). Keep both, or pick one?
 - Unattended runs: the 2026-11-05 decision let them add memories to an add-only store. The hardening made the
   built-in memory tool propose even an add in an unattended run (a job's input is often outside text). Keep the
   stricter rule, or allow adds again from unattended runs whose input is all trusted?
@@ -52,8 +46,6 @@ not done or not verified, and one line per recent session. Each decision is one 
 ## Not done / not verified
 - Nothing has travelled yet: the first session summary comes from the next `/reflect` in an opted-in repository,
   and no code map is committed.
-- Control Room: the live session list was not tried through the connector (the page was looked at outside
-  claude.ai); the repository details are a snapshot, not live.
 - State travel (0.3.0): tested with temporary repositories and local remote-tracking refs, not with a real remote
   or in a live Claude Code session; Windows not tested. A lower-case word in a listed tool's subcommand place, or an
   `npm run` script name, travels as it is (`docs/kit.md`, known limits).
@@ -72,6 +64,8 @@ not done or not verified, and one line per recent session. Each decision is one 
   tooling (dev-time, no runtime exposure). Revisit when ESLint and typescript-eslint move past it.
 
 ## Recent sessions
+- 2026-11-16: the Control Room became a real web app (Emil's choice), live on Vercel; Emil signed in and it read the
+  repositories live.
 - 2026-11-11: 0.3.1 merged (PR #8) and synced into all three targets (merged); one private target opted in, the
   other's opt-in waits for CI; the Control Room page for Emil.
 - 2026-11-11: kit 0.3.1: the opt-in reads `origin/HEAD` the way the `hermod-state` check does (when it is set, only its
