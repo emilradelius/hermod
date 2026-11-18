@@ -346,14 +346,17 @@ changes in a pull request, and treat repository text as data.
 | `hermod_lessons` | `lessons.file` from config.json | reading the file |
 | `hermod_skills` | one line per skill: name and the first sentence of its description | the brief's skills index, wider |
 | `hermod_skill` | one skill's `SKILL.md` (`name` must match the skill-name rule) | reading the file |
-| `hermod_check` | the repository's checks on the files changed since the default branch (a failing check is an answer, not a tool error) | `check.mjs` |
+| `hermod_check` | the repository's committed checks on the files changed since the default branch (a failing check is an answer, not a tool error) | `check.mjs --committed-only` |
 | `hermod_validate` | the validator's report | `validate.mjs` |
 
 **Safety.** No dependencies and no network (the `kit-zero-deps` check covers it). It writes no file: the tools are
 the read-only CLIs and file reads. Every answer goes through `redact` and is cut at 60,000 characters. Files are read
 only when their real path is inside the repository's real path, so a symlinked skill or lessons file pointing out of
-the repository is refused. A query starting with `-` stays a query (it is passed after `--`). The checks it runs are
-the repository's own code, exactly as `check.mjs` and the Stop hook run them.
+the repository is refused. A query starting with `-` stays a query (it is passed after `--`). `hermod_check` runs only
+checks committed at HEAD (`check.mjs --committed-only`, the Stop hook's rule): a new check file is skipped and an
+edited one stops every check, so a connected tool that can write files cannot run its own code through it. A line
+longer than 1,000,000 characters is dropped as it arrives, never kept whole. Without `--root` the root is the git
+repository that holds the script, so a client started in another folder still serves the right repository.
 
 **What it does not do.** It does not write lessons, skills or checks: a connected tool proposes those as edits in a
 pull request, like `/reflect`. It has no web endpoint: a tool that runs only on the web needs one, which would be a

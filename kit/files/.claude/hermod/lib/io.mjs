@@ -248,10 +248,11 @@ export function appendLine(file, line) {
 }
 
 /**
+ * The real path of p (symlinks resolved), or p resolved when it does not exist.
  * @param {string} p
  * @returns {string}
  */
-function realpathOr(p) {
+export function realpathOr(p) {
   try {
     return fs.realpathSync.native(p);
   } catch {
@@ -260,11 +261,12 @@ function realpathOr(p) {
 }
 
 /**
+ * Whether child is parent itself or a path inside it (both absolute, already resolved).
  * @param {string} parent
  * @param {string} child
  * @returns {boolean}
  */
-function isInside(parent, child) {
+export function isInside(parent, child) {
   const rel = path.relative(parent, child);
   return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
 }

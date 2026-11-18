@@ -10,21 +10,20 @@
  * command-line tools (brief.mjs, recall.mjs, check.mjs, validate.mjs), and every answer is redacted
  * (lib/redact.mjs) and capped. The checks are the repository's own code, run as check.mjs runs them.
  *
- * A client starts it as a local server, for example {"command": "node", "args": [".claude/hermod/mcp.mjs",
- * "--root", "/path/to/repository"]}. Without --root the root is $CLAUDE_PROJECT_DIR, else the git top level of the
- * folder it starts in.
+ * A client starts it as a local server, for example {"command": "node", "args": ["/path/to/repository/.claude/hermod/
+ * mcp.mjs", "--root", "/path/to/repository"]}. Without --root the root is the git repository that holds this script
+ * (<root>/.claude/hermod/mcp.mjs), else $CLAUDE_PROJECT_DIR, else the git top level of the folder it starts in.
  */
 import fs from "node:fs";
 import path from "node:path";
-import readline from "node:readline";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { main as briefMain } from "./brief.mjs";
 import { main as checkMain } from "./check.mjs";
 import { loadConfig } from "./lib/config.mjs";
-import { isMainModule, readText, resolveRoot } from "./lib/io.mjs";
+import { isInside, isMainModule, readText, realpathOr, resolveRoot } from "./lib/io.mjs";
 import { redact } from "./lib/redact.mjs";
-import { listSkills, MAX_NAME_CHARS, SKILL_NAME_RE, skillIndex } from "./lib/skills.mjs";
+import { indexLine, listSkills, MAX_NAME_CHARS, readSkill, SKILL_NAME_RE } from "./lib/skills.mjs";
 import { main as recallMain } from "./recall.mjs";
 import { main as validateMain } from "./validate.mjs";
 
@@ -34,7 +33,8 @@ An MCP server over stdio (JSON-RPC 2.0, one message per line) that lets any MCP 
 repository: hermod_brief, hermod_recall, hermod_lessons, hermod_skills, hermod_skill, hermod_check and
 hermod_validate. It only reads: no dependencies, no network, no file changes.
 
-  --root DIR  the repository root (default: $CLAUDE_PROJECT_DIR, else the git top level of this folder)
+  --root DIR  the repository root (default: the git repository that holds this script, else
+              $CLAUDE_PROJECT_DIR, else the git top level of this folder)
   --help      show this help`;
 
 /** Protocol versions this server can speak, newest first. */
@@ -163,19 +163,26 @@ export function finish(text) {
 }
 
 /**
- * The real path of a file, when it is inside the real root; else null (a symlink out of the repository).
+ * The real path of a file that exists inside the real root; else null (missing, or a symlink out of the repository).
  * @param {string} root
  * @param {string} file
  * @returns {string | null}
  */
 function insideRoot(root, file) {
-  try {
-    const realRoot = fs.realpathSync(root);
-    const real = fs.realpathSync(file);
-    return real === realRoot || real.startsWith(realRoot + path.sep) ? real : null;
-  } catch {
-    return null;
-  }
+  if (!fs.existsSync(file)) return null;
+  const real = realpathOr(file);
+  return isInside(realpathOr(root), real) ? real : null;
+}
+
+/**
+ * The git repository that holds this script, when it sits at <root>/.claude/hermod/mcp.mjs; else null.
+ * @returns {string | null}
+ */
+function scriptRepository() {
+  const dir = path.dirname(fileURLToPath(import.meta.url));
+  const root = path.resolve(dir, "..", "..");
+  const placed = path.basename(dir) === "hermod" && path.basename(path.dirname(dir)) === ".claude";
+  return placed && fs.existsSync(path.join(root, ".git")) ? root : null;
 }
 
 /** The kit version from this folder's VERSION.json stamp, or "dev" (in the Hermod repository itself). */
@@ -248,7 +255,6 @@ export function argumentProblem(name, args) {
  * @returns {Promise<ToolAnswer>}
  */
 export async function callTool(root, name, args) {
-  const config = loadConfig(root).config;
   switch (name) {
     case "hermod_brief":
       return viaCli(briefMain, ["--root", root], root, [0]);
@@ -261,25 +267,34 @@ export async function callTool(root, name, args) {
       return viaCli(recallMain, argv, root, [0]);
     }
     case "hermod_lessons": {
-      const rel = String(config.lessons?.file ?? ".claude/hermod/LESSONS.md");
+      const rel = String(loadConfig(root).config.lessons?.file ?? ".claude/hermod/LESSONS.md");
       const file = insideRoot(root, path.join(root, ...rel.split("/")));
       const text = file === null ? null : readText(file, { maxBytes: MAX_FILE_BYTES });
       return text === null ? { text: `No lessons file (${rel}).`, isError: false } : { text, isError: false };
     }
     case "hermod_skills": {
-      const index = skillIndex(root, { dir: config.skills?.dir, indexChars: 200 });
-      return { text: index.length === 0 ? "No skills." : index.map((s) => `- ${s.line}`).join("\n"), isError: false };
+      // Like the brief's skills index, but wider, and never through a symlink out of the repository.
+      const lines = [];
+      for (const ref of listSkills(root, loadConfig(root).config.skills?.dir)) {
+        if (insideRoot(root, ref.file) === null) continue;
+        const skill = readSkill(ref.dir);
+        if (!skill.description || skill.description.trim() === "") continue;
+        const shown = skill.name && SKILL_NAME_RE.test(skill.name) ? skill.name : ref.name;
+        lines.push(`- ${indexLine({ name: shown, description: skill.description }, 200)}`);
+      }
+      return { text: lines.length === 0 ? "No skills." : lines.join("\n"), isError: false };
     }
     case "hermod_skill": {
       const want = String(args.name);
-      const ref = listSkills(root, config.skills?.dir).find((s) => s.name === want);
+      const ref = listSkills(root, loadConfig(root).config.skills?.dir).find((s) => s.name === want);
       const file = ref ? insideRoot(root, ref.file) : null;
       const text = file === null ? null : readText(file, { maxBytes: MAX_FILE_BYTES });
       return text === null ? { text: `No skill named ${want}. hermod_skills lists them.`, isError: true } : { text, isError: false };
     }
     case "hermod_check":
-      // Exit 1 means a check failed: that is an answer to read, not a broken tool.
-      return viaCli(checkMain, ["--root", root], root, [0, 1]);
+      // Only committed checks run, as in the Stop hook: a connected tool that can write files must not be able to
+      // run its own code by adding a check. Exit 1 means a check failed: an answer to read, not a broken tool.
+      return viaCli(checkMain, ["--root", root, "--committed-only"], root, [0, 1]);
     case "hermod_validate":
       return viaCli(validateMain, ["--root", root], root, [0, 1]);
     default:
@@ -319,7 +334,10 @@ export async function handleMessage(message, server) {
   }
   // A notification (no id): nothing to answer.
   if (!hasId) return null;
-  const params = m.params && typeof m.params === "object" && !Array.isArray(m.params) ? /** @type {Record<string, unknown>} */ (m.params) : {};
+  if (m.params !== undefined && (m.params === null || typeof m.params !== "object" || Array.isArray(m.params))) {
+    return failure(id, -32602, "params must be an object");
+  }
+  const params = /** @type {Record<string, unknown>} */ (m.params ?? {});
 
   switch (m.method) {
     case "initialize": {
@@ -362,13 +380,13 @@ export async function handleMessage(message, server) {
 
 /**
  * Answers one line from stdin: a message or a batch (a JSON array). Returns the line to write, or null.
- * @param {string} line
+ * @param {string | null} line null for a line that was longer than MAX_LINE_CHARS (it is not kept)
  * @param {{ root: string, version: string }} server
  * @returns {Promise<string | null>}
  */
 export async function handleLine(line, server) {
+  if (line === null || line.length > MAX_LINE_CHARS) return JSON.stringify(failure(null, -32700, "Parse error: message too long"));
   if (line.trim() === "") return null;
-  if (line.length > MAX_LINE_CHARS) return JSON.stringify(failure(null, -32700, "Parse error: message too long"));
   /** @type {unknown} */
   let message;
   try {
@@ -407,24 +425,65 @@ export async function main(argv) {
     process.stderr.write(`${USAGE}\n`);
     return 0;
   }
-  const root = resolveRoot({ root: args.root ?? null, env: process.env, cwd: process.cwd(), useGit: true });
+  const root =
+    args.root !== undefined
+      ? resolveRoot({ root: args.root, env: process.env, cwd: process.cwd() })
+      : (scriptRepository() ?? resolveRoot({ root: null, env: process.env, cwd: process.cwd(), useGit: true }));
   if (!fs.existsSync(root) || !fs.statSync(root).isDirectory()) {
     process.stderr.write(`mcp: the root folder ${root} does not exist\n`);
     return 1;
   }
   const server = { root, version: kitVersion() };
-  const lines = readline.createInterface({ input: process.stdin, crlfDelay: Infinity, terminal: false });
-  // One message at a time, in order: a slow tool never lets a later answer overtake it.
+  // One message at a time, in order: a slow tool never lets a later answer overtake it. A failure is logged and the
+  // queue goes on, so one bad message never silences the rest of the session.
   let queue = Promise.resolve();
-  lines.on("line", (line) => {
-    queue = queue.then(async () => {
-      const out = await handleLine(line, server);
-      if (out !== null) process.stdout.write(`${out}\n`);
-    });
+  await readLines(process.stdin, (line) => {
+    queue = queue
+      .then(async () => {
+        const out = await handleLine(line, server);
+        if (out !== null) process.stdout.write(`${out}\n`);
+      })
+      .catch((error) => {
+        process.stderr.write(`mcp: ${error instanceof Error ? error.message : error}\n`);
+      });
   });
-  await new Promise((resolve) => lines.once("close", resolve));
   await queue;
   return 0;
+}
+
+/**
+ * Calls onLine for every line of input until it ends. A line longer than MAX_LINE_CHARS is never kept whole: onLine
+ * gets null for it once, and the rest of it, up to the next newline, is dropped.
+ * @param {NodeJS.ReadableStream} input
+ * @param {(line: string | null) => void} onLine
+ * @returns {Promise<void>}
+ */
+export function readLines(input, onLine) {
+  return new Promise((resolve) => {
+    let buffer = "";
+    let dropping = false;
+    input.setEncoding("utf8");
+    input.on("data", (/** @type {string} */ chunk) => {
+      let start = 0;
+      for (let nl = chunk.indexOf("\n", start); nl !== -1; nl = chunk.indexOf("\n", start)) {
+        if (dropping) dropping = false;
+        else onLine((buffer + chunk.slice(start, nl)).replace(/\r$/, ""));
+        buffer = "";
+        start = nl + 1;
+      }
+      if (dropping) return;
+      buffer += chunk.slice(start);
+      if (buffer.length > MAX_LINE_CHARS) {
+        onLine(null);
+        buffer = "";
+        dropping = true;
+      }
+    });
+    input.on("end", () => {
+      if (!dropping && buffer !== "") onLine(buffer.replace(/\r$/, ""));
+      resolve();
+    });
+  });
 }
 
 if (isMainModule(import.meta.url)) {

@@ -204,9 +204,11 @@ describe("the MCP connector: tools", () => {
     mkdirSync(path.join(outside, "leak"), { recursive: true });
     writeFileSync(path.join(outside, "leak", "SKILL.md"), "---\nname: leak\ndescription: Outside.\n---\nSECRET-OUTSIDE-TEXT\n");
     symlinkSync(path.join(outside, "leak"), repo.abs(".claude/skills/leak"));
-    const { at } = talk(repo, [init, call(2, "hermod_skill", { name: "leak" })]);
+    const { at } = talk(repo, [init, call(2, "hermod_skill", { name: "leak" }), call(3, "hermod_skills")]);
     expect(at(1).result.isError).toBe(true);
     expect(text(at(1))).not.toContain("SECRET-OUTSIDE-TEXT");
+    expect(text(at(2))).not.toContain("leak");
+    expect(text(at(2))).toContain("demo-skill");
   });
 
   it("hermod_check runs the repository's checks, and hermod_validate the validator", () => {
@@ -235,6 +237,50 @@ describe("the MCP connector: tools", () => {
     expect(M.argumentProblem("hermod_recall", { query: "ok", limit: 2.5 })).toMatch(/whole number/);
     expect(M.argumentProblem("hermod_skill", { name: "Bad Name" })).toMatch(/valid name/);
     expect(M.argumentProblem("hermod_recall", { query: "ok", limit: 3, source: "git" })).toBeNull();
+  });
+});
+
+describe("the MCP connector: review fixes", () => {
+  it("hermod_check runs only committed checks, so a client cannot run its own code by adding one", () => {
+    const fresh = makeRepo({ seed: true, files: { "docs/PROGRESS.md": progress } });
+    const marker = fresh.abs("ran.txt");
+    fresh.write(
+      ".claude/hermod/checks/sneaky.mjs",
+      `import fs from "node:fs";\nfs.writeFileSync(${JSON.stringify(marker)}, "ran");\nexport default { id: "sneaky", description: "x", run: () => ({ ok: true }) };\n`,
+    );
+    const { at } = talk(fresh, [init, call(2, "hermod_check")]);
+    expect(text(at(1))).toMatch(/sneaky: not run: the file is not committed yet/);
+    expect(fresh.exists("ran.txt")).toBe(false);
+  });
+
+  it("check.mjs --committed-only exits 1 and says why when a committed check was edited", () => {
+    const fresh = makeRepo({ seed: true, files: { "docs/PROGRESS.md": progress } });
+    // An edited committed check: with --committed-only no check runs at all.
+    fresh.write(".claude/hermod/checks/hermod-state.mjs", `${fresh.read(".claude/hermod/checks/hermod-state.mjs")}\n// edited\n`);
+    const r = runNode(fresh.kitPath("check.mjs"), { args: ["--root", fresh.root, "--committed-only"] });
+    expect(r.code).toBe(1);
+    expect(r.stderr).toMatch(/--committed-only runs only checks committed at HEAD/);
+  });
+
+  it("without --root, serves the repository that holds the script, wherever it is started", () => {
+    const elsewhere = tempDir("hermod-cwd-");
+    const r = runNode(repo.kitPath("mcp.mjs"), { stdin: JSON.stringify(call(1, "hermod_brief")) + "\n", cwd: elsewhere });
+    expect(String(JSON.parse(r.stdout.trim()).result.content[0].text)).toContain("partial refunds are half done");
+  });
+
+  it("answers an overlong line with one parse error without keeping it, then goes on", () => {
+    const huge = "x".repeat(1_000_100);
+    const { replies } = talk(repo, [huge, { jsonrpc: "2.0", id: 2, method: "ping" }]);
+    expect(replies.map((r) => [r.id, r.error?.code])).toEqual([
+      [null, -32700],
+      [2, undefined],
+    ]);
+  });
+
+  it("refuses params that are not an object", () => {
+    const { at } = talk(repo, [{ jsonrpc: "2.0", id: 1, method: "tools/call", params: ["hermod_brief"] }]);
+    expect(at(0).error?.code).toBe(-32602);
+    expect(at(0).error?.message).toMatch(/params must be an object/);
   });
 });
 

@@ -17,7 +17,7 @@ import { loadConfig } from "./lib/config.mjs";
 import { changedFilesSince, defaultBranchRef, head, isSafeRef, mergeBase, revParse } from "./lib/git.mjs";
 import { isMainModule, resolveRoot } from "./lib/io.mjs";
 
-export const USAGE = `Usage: node .claude/hermod/check.mjs [--root DIR] [--base REF] [--self-test] [--json] [--help]
+export const USAGE = `Usage: node .claude/hermod/check.mjs [--root DIR] [--base REF] [--committed-only] [--self-test] [--json] [--help]
 
 Runs the repository's checks (checks.dir in config.json, default .claude/hermod/checks/) on the files changed
 since a base ref: committed since the base, plus staged, unstaged and untracked files.
@@ -25,6 +25,8 @@ since a base ref: committed since the base, plus staged, unstaged and untracked 
   --root DIR    the repository root (default: $CLAUDE_PROJECT_DIR, else the git top level of this folder)
   --base REF    compare with this ref (default: checks.base in config.json; "auto" = the merge base with the
                 default branch, else HEAD, which means uncommitted changes only)
+  --committed-only  run only the checks committed at HEAD, as the Stop hook does; an uncommitted change in the
+                checks folder means no check runs (exit 1). The MCP connector always passes it.
   --self-test   run every check's examples against fake contexts (no git) and report each example whose
                 result differs from its "expect"
   --json        print the full result as JSON
@@ -145,7 +147,7 @@ export function formatSelfTest(report) {
 export async function main(argv, io = {}) {
   const stdout = io.stdout ?? process.stdout;
   const stderr = io.stderr ?? process.stderr;
-  /** @type {{ root?: string, base?: string, "self-test"?: boolean, json?: boolean, help?: boolean }} */
+  /** @type {{ root?: string, base?: string, "self-test"?: boolean, "committed-only"?: boolean, json?: boolean, help?: boolean }} */
   let args;
   try {
     args = parseArgs({
@@ -154,6 +156,7 @@ export async function main(argv, io = {}) {
         root: { type: "string" },
         base: { type: "string" },
         "self-test": { type: "boolean" },
+        "committed-only": { type: "boolean" },
         json: { type: "boolean" },
         help: { type: "boolean", short: "h" },
       },
@@ -188,8 +191,16 @@ export async function main(argv, io = {}) {
     }
     if (choice.warning) stderr.write(`check: ${choice.warning}\n`);
     const changedFiles = changedFilesSince(root, choice.base);
-    const report = await runChecks(root, { dir: config.checks.dir, base: choice.base, changedFiles });
-    const ok = blockingFailures(report.results).length === 0 && report.errors.length === 0;
+    const committedOnly = args["committed-only"] === true;
+    const report = await runChecks(root, { dir: config.checks.dir, base: choice.base, changedFiles, committedOnly });
+    const uncommitted = committedOnly && report.uncommitted ? report.uncommitted : [];
+    const ok = blockingFailures(report.results).length === 0 && report.errors.length === 0 && uncommitted.length === 0;
+    if (uncommitted.length > 0) {
+      stderr.write(
+        `check: the checks folder has uncommitted changes (${uncommitted.slice(0, 5).join(", ")}), so no check ran: ` +
+          "--committed-only runs only checks committed at HEAD. Commit the change in a pull request, or restore it.\n",
+      );
+    }
     if (args.json) {
       stdout.write(`${JSON.stringify({ ok, baseLabel: choice.label, ...report }, null, 2)}\n`);
     } else {

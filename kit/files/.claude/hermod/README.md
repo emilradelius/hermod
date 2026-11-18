@@ -94,6 +94,7 @@ All commands run from the repository root and accept `--root DIR`, `--json` and 
 node .claude/hermod/validate.mjs [--strict]          # config.json, LESSONS.md and every skill; exit 1 on errors
 node .claude/hermod/check.mjs [--base REF]           # run the repository's checks against a base ref
 node .claude/hermod/check.mjs --self-test            # run every check's own examples
+node .claude/hermod/check.mjs --committed-only       # only checks committed at HEAD, as the Stop hook runs them
 node .claude/hermod/recall.mjs "query" [--limit N] [--source progress|decisions|git|history|all]
 node .claude/hermod/curator.mjs [--out FILE]         # report on skill and lesson health (never edits)
 node .claude/hermod/reflect-prep.mjs [--session ID] [--write-usage]  # evidence bundle for /reflect, in .local/reflect/;
