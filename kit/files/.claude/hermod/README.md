@@ -18,6 +18,8 @@ What it does:
   validation fails, it asks Claude to finish the job before stopping. It blocks at most once per reason and
   never more than `ritual.maxBlocksPerSession` times per session.
 - **Tools** you or Claude can run (below): validate, check, recall, curator, reflect-prep, brief.
+- **A connector for any tool** (`mcp.mjs`): an MCP server over stdio, so any AI tool that speaks MCP can read the
+  brief, search past work, load the lessons and skills, and run the checks. It only reads. See "Connecting any tool".
 
 ## Whose files are these?
 
@@ -101,6 +103,41 @@ node .claude/hermod/brief.mjs                        # the brief a new session w
 
 `validate.mjs` exits with 0 when everything is valid and 1 when there are errors (or warnings with
 `--strict`), so it can run in CI.
+
+## Connecting any tool
+
+Everything here is plain files and plain commands, so any tool or AI can use it, not only Claude Code. Three ways:
+
+- **Any MCP client.** Add a local (stdio) server that runs `node .claude/hermod/mcp.mjs --root <this repository>`. It
+  offers `hermod_brief`, `hermod_recall`, `hermod_lessons`, `hermod_skills`, `hermod_skill`, `hermod_check` and
+  `hermod_validate`, and it tells the client's model the rules: start from the brief, run the checks before finishing,
+  propose changes in a pull request. Most clients take it as JSON, with the repository's full path:
+
+  ```json
+  { "mcpServers": { "hermod": { "command": "node", "args": ["/path/to/repo/.claude/hermod/mcp.mjs", "--root", "/path/to/repo"] } } }
+  ```
+
+  In Claude Code the hooks already do the brief and the end-of-session check; the connector adds the tools:
+
+  ```bash
+  claude mcp add hermod -- node .claude/hermod/mcp.mjs --root "$(pwd)"
+  ```
+
+- **Any agent that can run a command.** Put these lines in its own instructions file (for example `AGENTS.md`):
+
+  ```text
+  At the start of a task, run `node .claude/hermod/brief.mjs` and read it. Search past work with
+  `node .claude/hermod/recall.mjs "words"`. Before you finish: when code changed, update docs/PROGRESS.md
+  (Status, Next step), then run `node .claude/hermod/check.mjs`. Propose changes to lessons, skills or checks
+  as edits in a pull request; a person decides by merging.
+  ```
+
+- **Anything else.** The progress file, the decisions, the lessons and the skills are Markdown in git, and every
+  change to them comes in as a pull request a person merges.
+
+The connector only reads: no dependencies, no network, no file changes, and every answer is redacted and capped. A
+tool you connect uses its own AI, and that AI's provider sees what the tool reads, so connect only tools you would
+let read this repository.
 
 ## Settings
 

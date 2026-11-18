@@ -26,6 +26,7 @@ needs no network, no extra AI provider and no installs. It gives every Claude Co
 | **`recall`** | `node .claude/hermod/recall.mjs "query"` searches progress logs, decisions and git history (BM25, no dependencies). |
 | **`/curate`** | A monthly report of unused, overlapping and too-long skills and lessons, turned into a pull request. |
 | **`sync`** | Copies a pinned version of the kit into a repository, touching only the files and hook entries it owns. |
+| **Connector for any tool** (`mcp.mjs`) | An MCP server over stdio: any AI tool that speaks MCP gets the brief, searches past work, loads lessons and skills, and runs the checks. It only reads. Agents without MCP run the same commands; anything else reads the files in git. |
 
 ### Part B: the runtime, for agents inside apps
 
