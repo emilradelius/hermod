@@ -253,6 +253,20 @@ describe("the MCP connector: review fixes", () => {
     expect(fresh.exists("ran.txt")).toBe(false);
   });
 
+  it("hermod_check runs nothing while the kit's own library differs from HEAD", () => {
+    const fresh = makeRepo({ seed: true, files: { "docs/PROGRESS.md": progress } });
+    const marker = fresh.abs("worker-ran.txt");
+    // Written only inside a check worker, which loads lib/ from the working tree again for every check.
+    fresh.write(
+      ".claude/hermod/lib/paths.mjs",
+      `${fresh.read(".claude/hermod/lib/paths.mjs")}\nimport { isMainThread as hermodMain } from "node:worker_threads";\nimport hermodFs from "node:fs";\nif (!hermodMain) hermodFs.writeFileSync(${JSON.stringify(marker)}, "ran");\n`,
+    );
+    const { at } = talk(fresh, [init, call(2, "hermod_check")]);
+    expect(text(at(1))).toMatch(/the kit's own code differs from HEAD/);
+    expect(text(at(1))).toContain(".claude/hermod/lib/paths.mjs");
+    expect(fresh.exists("worker-ran.txt")).toBe(false);
+  });
+
   it("check.mjs --committed-only exits 1 and says why when a committed check was edited", () => {
     const fresh = makeRepo({ seed: true, files: { "docs/PROGRESS.md": progress } });
     // An edited committed check: with --committed-only no check runs at all.

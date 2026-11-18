@@ -354,9 +354,16 @@ the read-only CLIs and file reads. Every answer goes through `redact` and is cut
 only when their real path is inside the repository's real path, so a symlinked skill or lessons file pointing out of
 the repository is refused. A query starting with `-` stays a query (it is passed after `--`). `hermod_check` runs only
 checks committed at HEAD (`check.mjs --committed-only`, the Stop hook's rule): a new check file is skipped and an
-edited one stops every check, so a connected tool that can write files cannot run its own code through it. A line
+edited one stops every check, and so does any change to the kit's own code (its scripts, `lib/` and `hooks/`),
+which each check's worker loads from the working tree again; a connected tool that can write files cannot run its
+own code through it. A line
 longer than 1,000,000 characters is dropped as it arrives, never kept whole. Without `--root` the root is the git
 repository that holds the script, so a client started in another folder still serves the right repository.
+
+**Known limits.** A committed check that imports a file outside the checks folder loads that file from the working
+tree, so keep checks to `node:` builtins and files inside the checks folder (the seeded checks import nothing). Git
+configuration in the repository (for example `core.fsmonitor` in `.git/config`) can run a command whenever git runs,
+for Hermod as for any git command; a tool that can write `.git/config` already controls git there.
 
 **What it does not do.** It does not write lessons, skills or checks: a connected tool proposes those as edits in a
 pull request, like `/reflect`. It has no web endpoint: a tool that runs only on the web needs one, which would be a
