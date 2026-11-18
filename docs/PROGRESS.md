@@ -3,10 +3,13 @@
 Short on purpose, so a new session can read it whole: the current status, the next step, open questions, what is
 not done or not verified, and one line per recent session. Each decision is one line in `docs/decisions.md`.
 
-## Status (2026-11-11)
+## Status (2026-11-18)
 - **Releases**: 0.1.0 (`32589df`, tag `v0.1.0`), 0.2.0 (`8df3d2f`, tag `v0.2.0`: the graphify skill), 0.3.0
   (`2143d5c`, PR #7: state travel) and 0.3.1 (`ca5d679`, PR #8: the opt-in reads `origin/HEAD` the way the check
-  does). The tag `v0.3.1` waits for Emil.
+  does). The tag `v0.3.1` waits for Emil. **0.4.0** (this branch, in review): the connector for any tool.
+- **Connects to any tool** (Emil, 2026-11-18): `mcp.mjs` is a read-only MCP server over stdio, so any MCP client can
+  get the brief, search past work, load lessons and skills, and run the checks; agents without MCP run the same
+  commands; anything else reads the Markdown in git and proposes by pull request (`docs/kit.md` section 12).
 - **Part A, the kit** (`docs/kit.md`): the brief, lessons and skills with a validator, the Stop ritual, the ledger,
   `/reflect`, lessons as checks, recall, the curator, pinned sync with opt-in library skills, Graphify (section 10)
   and state that follows you between devices (section 11).
@@ -25,6 +28,8 @@ not done or not verified, and one line per recent session. Each decision is one 
   GitHub, shows what needs Emil, and draws the committed code maps. It replaced the claude.ai page of 2026-11-11.
 
 ## Next step
+- Emil: merge 0.4.0 (the connector), then tag it `v0.4.0` on the merge commit; sync it into the targets in their own
+  pull requests. A tool that runs only on the web would need a web endpoint: a new system, not built.
 - Emil: tag `v0.3.1` on GitHub on `ca5d679` (0.3.0 needs no tag of its own: no target is pinned to it). Then build
   the code map once in each opted-in private repository (the `graphify` skill), search `graph.json` for the user name
   and for `\\` first, and commit it there in a pull request if neither is there.
@@ -44,6 +49,9 @@ not done or not verified, and one line per recent session. Each decision is one 
 - An empty root commit was pushed to `main` so the empty repository had a base branch for this pull request.
 
 ## Not done / not verified
+- The MCP connector (0.4.0) was tested as a process with real stdin, a temporary repository and every tool, not yet
+  from a named MCP client (Claude Desktop, an editor, another AI tool). No web endpoint exists for tools that run
+  only on the web.
 - Nothing has travelled yet: the first session summary comes from the next `/reflect` in an opted-in repository,
   and no code map is committed.
 - State travel (0.3.0): tested with temporary repositories and local remote-tracking refs, not with a real remote
@@ -64,6 +72,9 @@ not done or not verified, and one line per recent session. Each decision is one 
   tooling (dev-time, no runtime exposure). Revisit when ESLint and typescript-eslint move past it.
 
 ## Recent sessions
+- 2026-11-18: 0.4.0, the connector for any tool (Emil: "IT NEEDS TO BE ABLE TO CONNECT TO ANYTHING AND
+  EVERYTHING"): a read-only MCP server, plus the same commands for agents without MCP. In review.
+- 2026-11-17: the Control Room got a setup video and the steps written out; the deck got a setup section.
 - 2026-11-16: the Control Room became a real web app (Emil's choice), live on Vercel; Emil signed in and it read the
   repositories live.
 - 2026-11-11: 0.3.1 merged (PR #8) and synced into all three targets (merged); one private target opted in, the

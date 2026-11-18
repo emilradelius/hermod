@@ -5,6 +5,13 @@ One line per decision: the day, who decided, what, and where the details are. Ne
 earlier one, change the old line to say "replaced by …" instead of deleting it.
 
 ## What Hermod is
+- 2026-11-18, Emil ("IT NEEDS TO BE ABLE TO CONNECT TO ANYTHING AND EVERYTHING"): Hermod connects to any tool, not
+  only Claude Code. Details: `docs/kit.md` section 12.
+- 2026-11-18, Claude: the first connector is a read-only MCP server over stdio in the kit (`mcp.mjs`): no
+  dependencies, no network, no writes, answers redacted and capped. Connected tools propose changes by pull request,
+  like `/reflect`; writing tools and a web endpoint for web-only tools are later and separate decisions.
+- 2026-11-18, Claude: a connected tool uses its own AI, and its provider sees what that tool reads. Hermod's own model
+  calls still go only to Anthropic; which tools to connect is the repository owner's choice.
 - 2026-11-10, Emil: `v0.1.0` is tagged on `32589df` (a GitHub release) under the MIT licence. The open question
   (MIT lets anyone reuse Hermod, also commercially; decide before the first tagged release) was put to him first.
 - 2026-11-05, Emil: build our own Hermes-style learning loop instead of installing or forking Hermes Agent: proposals

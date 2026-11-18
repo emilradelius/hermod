@@ -11,13 +11,15 @@
  * Read-only: it never changes a file (the checks themselves are the repository's own code).
  */
 import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { blockingFailures, runChecks, selfTest } from "./lib/checks.mjs";
 import { loadConfig } from "./lib/config.mjs";
-import { changedFilesSince, defaultBranchRef, head, isSafeRef, mergeBase, revParse } from "./lib/git.mjs";
-import { isMainModule, resolveRoot } from "./lib/io.mjs";
+import { changedFilesSince, defaultBranchRef, head, isSafeRef, mergeBase, revParse, runGit } from "./lib/git.mjs";
+import { isInside, isMainModule, realpathOr, resolveRoot } from "./lib/io.mjs";
 
-export const USAGE = `Usage: node .claude/hermod/check.mjs [--root DIR] [--base REF] [--self-test] [--json] [--help]
+export const USAGE = `Usage: node .claude/hermod/check.mjs [--root DIR] [--base REF] [--committed-only] [--self-test] [--json] [--help]
 
 Runs the repository's checks (checks.dir in config.json, default .claude/hermod/checks/) on the files changed
 since a base ref: committed since the base, plus staged, unstaged and untracked files.
@@ -25,6 +27,9 @@ since a base ref: committed since the base, plus staged, unstaged and untracked 
   --root DIR    the repository root (default: $CLAUDE_PROJECT_DIR, else the git top level of this folder)
   --base REF    compare with this ref (default: checks.base in config.json; "auto" = the merge base with the
                 default branch, else HEAD, which means uncommitted changes only)
+  --committed-only  run only the checks committed at HEAD, as the Stop hook does; an uncommitted change in the
+                checks folder, or in the kit's own code, means no check runs (exit 1). The MCP connector always
+                passes it.
   --self-test   run every check's examples against fake contexts (no git) and report each example whose
                 result differs from its "expect"
   --json        print the full result as JSON
@@ -36,6 +41,35 @@ the wrong result or a check is invalid), 2 for a usage error.`;
 /**
  * @typedef {{ base: string | null, label: string, warning: string | null }} BaseChoice
  */
+
+/**
+ * Files of the kit's own code (this folder's scripts, lib/ and hooks/) that differ from HEAD, when the kit lives
+ * inside the repository. Each check runs in a worker that loads lib/checks.mjs and its imports from the working
+ * tree again, so with --committed-only any such change stops every check: a tool that can write files must not run
+ * its own code through an edited library file. A kit outside the repository returns [] (nothing in the repository
+ * can change it).
+ * @param {string} root
+ * @returns {string[]}
+ */
+export function uncommittedKitCode(root) {
+  const realRoot = realpathOr(root);
+  const kitDir = realpathOr(path.dirname(fileURLToPath(import.meta.url)));
+  if (kitDir === realRoot || !isInside(realRoot, kitDir)) return [];
+  const prefix = path.relative(realRoot, kitDir).split(path.sep).join("/");
+  const r = runGit(root, ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--", `${prefix}/*.mjs`, `${prefix}/lib`, `${prefix}/hooks`]);
+  // Without a readable status nothing can be shown to be committed: refuse rather than guess.
+  if (!r.ok) return [`${prefix}/ (git status failed)`];
+  /** @type {string[]} */
+  const out = [];
+  const fields = r.stdout.split("\0");
+  for (let i = 0; i < fields.length; i += 1) {
+    const record = fields[i];
+    if (!record || record.length < 4) continue;
+    if (record[0] === "R" || record[0] === "C") i += 1; // a rename or copy is followed by its source path
+    out.push(record.slice(3));
+  }
+  return [...new Set(out)].sort();
+}
 
 /**
  * The automatic base: the merge base of HEAD with the default branch, else HEAD.
@@ -145,7 +179,7 @@ export function formatSelfTest(report) {
 export async function main(argv, io = {}) {
   const stdout = io.stdout ?? process.stdout;
   const stderr = io.stderr ?? process.stderr;
-  /** @type {{ root?: string, base?: string, "self-test"?: boolean, json?: boolean, help?: boolean }} */
+  /** @type {{ root?: string, base?: string, "self-test"?: boolean, "committed-only"?: boolean, json?: boolean, help?: boolean }} */
   let args;
   try {
     args = parseArgs({
@@ -154,6 +188,7 @@ export async function main(argv, io = {}) {
         root: { type: "string" },
         base: { type: "string" },
         "self-test": { type: "boolean" },
+        "committed-only": { type: "boolean" },
         json: { type: "boolean" },
         help: { type: "boolean", short: "h" },
       },
@@ -188,8 +223,26 @@ export async function main(argv, io = {}) {
     }
     if (choice.warning) stderr.write(`check: ${choice.warning}\n`);
     const changedFiles = changedFilesSince(root, choice.base);
-    const report = await runChecks(root, { dir: config.checks.dir, base: choice.base, changedFiles });
-    const ok = blockingFailures(report.results).length === 0 && report.errors.length === 0;
+    const committedOnly = args["committed-only"] === true;
+    if (committedOnly) {
+      const kitChanges = uncommittedKitCode(root);
+      if (kitChanges.length > 0) {
+        stderr.write(
+          `check: the kit's own code differs from HEAD (${kitChanges.slice(0, 5).join(", ")}), so no check ran: ` +
+            "--committed-only runs checks only with committed kit code. Commit the change in a pull request, or restore it.\n",
+        );
+        return 1;
+      }
+    }
+    const report = await runChecks(root, { dir: config.checks.dir, base: choice.base, changedFiles, committedOnly });
+    const uncommitted = committedOnly && report.uncommitted ? report.uncommitted : [];
+    const ok = blockingFailures(report.results).length === 0 && report.errors.length === 0 && uncommitted.length === 0;
+    if (uncommitted.length > 0) {
+      stderr.write(
+        `check: the checks folder has uncommitted changes (${uncommitted.slice(0, 5).join(", ")}), so no check ran: ` +
+          "--committed-only runs only checks committed at HEAD. Commit the change in a pull request, or restore it.\n",
+      );
+    }
     if (args.json) {
       stdout.write(`${JSON.stringify({ ok, baseLabel: choice.label, ...report }, null, 2)}\n`);
     } else {
