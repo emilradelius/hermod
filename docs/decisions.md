@@ -56,6 +56,10 @@ earlier one, change the old line to say "replaced by …" instead of deleting it
   for multi-step agentic work), `low` for background work. `src/model/models.ts`.
 
 ## How the kit works (Claude, within the plan)
+- 2026-11-24, Claude (Emil: "do this!!!", the Control Room's automatic setup): `scripts/sync.mjs` exports its
+  planning half (`kitFromEntries`, `planSync`, `planWrites`), and the Hermod Control Room runs that same code on the
+  kit and the target read through GitHub's API, so a setup pull request holds exactly what a sync at the same ref
+  writes. The local sync is unchanged: it plans with the same functions and applies them itself.
 - 2026-11-16, Emil ("a real web app, not a claude app"): the Control Room is a private web app of its own (Next.js on
   Vercel, GitHub sign-in for one account, a read-only token), in its own private repository. Replaces the next line.
 - 2026-11-11, Claude (replaced by the line above): the page Emil asked for, to see

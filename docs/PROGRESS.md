@@ -3,7 +3,14 @@
 Short on purpose, so a new session can read it whole: the current status, the next step, open questions, what is
 not done or not verified, and one line per recent session. Each decision is one line in `docs/decisions.md`.
 
-## Status (2026-11-18)
+## Status (2026-11-24)
+- **Sync, planned from data** (2026-11-24, for the Control Room's setup pull requests, Emil: "do this!!!"):
+  `scripts/sync.mjs` exports its planning half, `kitFromEntries` (the kit from tree entries and blobs, each checked
+  against its object id), `planSync` (what to write, delete, seed and keep, and the settings and stamp) and
+  `planWrites` (the changes in the order a local sync applies them). `readKitAt`, `runSync` and `applyPlan` call them,
+  so a local sync behaves exactly as before. `test/kit/sync-plan.test.ts` reads the kit and an in-memory target the
+  way the Control Room does and checks the planned writes against the real script, on a first install and on an
+  upgrade. No kit change, so no release.
 - **Releases**: 0.1.0 (`32589df`, tag `v0.1.0`), 0.2.0 (`8df3d2f`, tag `v0.2.0`: the graphify skill), 0.3.0
   (`2143d5c`, PR #7: state travel) and 0.3.1 (`ca5d679`, PR #8: the opt-in reads `origin/HEAD` the way the check
   does). The tag `v0.3.1` waits for Emil. **0.4.0** (this branch, in review): the connector for any tool.
@@ -72,6 +79,8 @@ not done or not verified, and one line per recent session. Each decision is one 
   tooling (dev-time, no runtime exposure). Revisit when ESLint and typescript-eslint move past it.
 
 ## Recent sessions
+- 2026-11-24: sync's planning half exported (`kitFromEntries`, `planSync`, `planWrites`) so the Control Room can
+  propose the same sync as a pull request; behaviour unchanged, four new tests.
 - 2026-11-18: 0.4.0, the connector for any tool (Emil: "IT NEEDS TO BE ABLE TO CONNECT TO ANYTHING AND
   EVERYTHING"): a read-only MCP server, plus the same commands for agents without MCP. In review.
 - 2026-11-17: the Control Room got a setup video and the steps written out; the deck got a setup section.
