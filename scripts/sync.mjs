@@ -847,16 +847,27 @@ function describeRef(ref, commit) {
 }
 
 /**
- * Reads and checks the kit at a commit of the hermod repository (never the working tree).
- * @param {string} sourceDir
- * @param {string} commit
- * @param {string} ref as given, for messages
+ * Builds and checks the kit from the entries under kit/ at one commit, the same way for every reader: `git ls-tree`
+ * here, and GitHub's tree API in the Hermod Control Room, which proposes the same sync as a pull request. Folder
+ * entries (a recursive tree from GitHub's API lists them) are skipped; symbolic links and submodules are refused.
+ * `read` gives an entry's bytes. It is called for every file under kit/files and kit/seed (optional skills too) and
+ * for kit/VERSION, kit/settings.hooks.json and kit/skills.json, never for other files such as kit/README.md. It is
+ * synchronous, so a reader over a network fetches those files first. The bytes must hash to the entry's object id.
+ * @param {TreeEntry[]} entries
+ * @param {(entry: TreeEntry) => Buffer} read
+ * @param {string} at the ref and commit, for messages
+ * @param {string} source where the entries come from, for messages
  * @returns {Kit}
  */
-export function readKitAt(sourceDir, commit, ref) {
-  const at = describeRef(ref, commit);
-  const listed = git(sourceDir, ["ls-tree", "-r", "-z", "--full-tree", commit, "--", "kit"]);
-  if (!listed.ok) throw new SyncError(`could not list kit/ at ${at}: ${listed.stderr}`);
+export function kitFromEntries(entries, read, at, source) {
+  /** @param {TreeEntry} entry */
+  const blob = (entry) => {
+    const data = read(entry);
+    if (gitBlobId(data, entry.oid.length) !== entry.oid) {
+      throw new SyncError(`the bytes read for ${entry.path} at ${at} do not hash to its object id ${entry.oid}.`);
+    }
+    return data;
+  };
   /** @type {Map<string, Buffer>} */
   const files = new Map();
   /** @type {Map<string, Buffer>} */
@@ -867,7 +878,8 @@ export function readKitAt(sourceDir, commit, ref) {
   let hooksData = null;
   /** @type {Buffer | null} */
   let skillsData = null;
-  for (const entry of parseLsTree(listed.stdout)) {
+  for (const entry of entries) {
+    if (entry.type === "tree") continue; // a folder: its files are listed on their own
     const isFile = entry.path.startsWith(KIT_FILES_DIR);
     const isSeed = entry.path.startsWith(KIT_SEED_DIR);
     const isVersion = entry.path === KIT_VERSION_FILE;
@@ -877,18 +889,18 @@ export function readKitAt(sourceDir, commit, ref) {
     if (entry.type !== "blob" || (entry.mode !== "100644" && entry.mode !== "100755")) {
       throw new SyncError(`${entry.path} at ${at} is ${describeMode(entry.mode)}; the kit may hold only regular files.`);
     }
-    if (isVersion) versionData = readBlob(sourceDir, commit, entry);
-    else if (isHooks) hooksData = readBlob(sourceDir, commit, entry);
-    else if (isSkills) skillsData = readBlob(sourceDir, commit, entry);
+    if (isVersion) versionData = blob(entry);
+    else if (isHooks) hooksData = blob(entry);
+    else if (isSkills) skillsData = blob(entry);
     else {
       const rel = entry.path.slice(isFile ? KIT_FILES_DIR.length : KIT_SEED_DIR.length);
       const problem = isFile ? kitFileProblem(rel) : seedProblem(rel);
       if (problem) throw new SyncError(`${entry.path} at ${at} cannot be synced: ${rel} ${problem}.`);
       if (isSeed && files.has(rel)) throw new SyncError(`${rel} is in both kit/files and kit/seed at ${at}.`);
-      (isFile ? files : seeds).set(rel, readBlob(sourceDir, commit, entry));
+      (isFile ? files : seeds).set(rel, blob(entry));
     }
   }
-  if (files.size === 0) throw new SyncError(`kit/files at ${at} has no files; is ${sourceDir} the hermod repository?`);
+  if (files.size === 0) throw new SyncError(`kit/files at ${at} has no files; is ${source} the hermod repository?`);
   if (versionData === null) throw new SyncError(`${KIT_VERSION_FILE} is missing at ${at}.`);
   if (hooksData === null) throw new SyncError(`${KIT_HOOKS_FILE} is missing at ${at}.`);
   checkPathCollisions([...files.keys(), ...seeds.keys()], at);
@@ -898,6 +910,20 @@ export function readKitAt(sourceDir, commit, ref) {
   const optional = skillsData === null ? [] : parseKitSkills(skillsData, at, folders);
   const core = folders.filter((name) => !optional.includes(name));
   return { version, files, seeds, hooks, skills: { core, optional } };
+}
+
+/**
+ * Reads and checks the kit at a commit of the hermod repository (never the working tree).
+ * @param {string} sourceDir
+ * @param {string} commit
+ * @param {string} ref as given, for messages
+ * @returns {Kit}
+ */
+export function readKitAt(sourceDir, commit, ref) {
+  const at = describeRef(ref, commit);
+  const listed = git(sourceDir, ["ls-tree", "-r", "-z", "--full-tree", commit, "--", "kit"]);
+  if (!listed.ok) throw new SyncError(`could not list kit/ at ${at}: ${listed.stderr}`);
+  return kitFromEntries(parseLsTree(listed.stdout), (entry) => readBlob(sourceDir, commit, entry), at, sourceDir);
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -1450,6 +1476,38 @@ function removeFile(root, rel) {
 }
 
 /**
+ * @typedef {object} PlannedWrite
+ * @property {string} path the target path
+ * @property {Buffer | null} data the new bytes, or null to delete the file
+ * @property {boolean} seed created only when missing (a seed); never replaces a file
+ */
+
+/**
+ * The changes a plan makes, in the order a local sync applies them: kit files added or updated, seeds, deletions,
+ * the settings and the stamp. A local sync writes exactly these to the folder; the Hermod Control Room puts the same
+ * changes in a pull request.
+ * @param {Kit} kit
+ * @param {FilePlan} files
+ * @param {WritePlan} settings
+ * @param {WritePlan} stamp
+ * @returns {PlannedWrite[]}
+ */
+export function planWrites(kit, files, settings, stamp) {
+  // A plan with conflicts is applied by nobody: a local sync writes nothing, and neither may anyone else.
+  if (files.conflict.length > 0) {
+    throw new SyncError(`${plural(files.conflict.length, "conflict")} (${listSome(files.conflict.map((c) => c.path))}); nothing may be written.`);
+  }
+  /** @type {PlannedWrite[]} */
+  const writes = [];
+  for (const rel of [...files.add, ...files.update]) writes.push({ path: rel, data: /** @type {Buffer} */ (kit.files.get(rel)), seed: false });
+  for (const rel of files.seed) writes.push({ path: rel, data: /** @type {Buffer} */ (kit.seeds.get(rel)), seed: true });
+  for (const rel of files.delete) writes.push({ path: rel, data: null, seed: false });
+  if (settings.action !== "unchanged") writes.push({ path: SETTINGS_PATH, data: Buffer.from(settings.text, "utf8"), seed: false });
+  if (stamp.action !== "unchanged") writes.push({ path: STAMP_PATH, data: Buffer.from(stamp.text, "utf8"), seed: false });
+  return writes;
+}
+
+/**
  * Writes the plan: kit files, seeds, deletions, settings, and the stamp last, so that an interrupted run can just
  * be run again (files that already have the kit's content count as unchanged).
  * @param {string} root
@@ -1461,22 +1519,11 @@ function removeFile(root, rel) {
 function applyPlan(root, kit, files, settings, stamp) {
   let done = 0;
   try {
-    for (const rel of [...files.add, ...files.update]) {
-      writeFileSafely(toAbsolute(root, rel), /** @type {Buffer} */ (kit.files.get(rel)));
-      done += 1;
+    for (const change of planWrites(kit, files, settings, stamp)) {
+      if (change.data === null) removeFile(root, change.path);
+      else if (!writeFileSafely(toAbsolute(root, change.path), change.data, change.seed)) continue;
+      if (change.path !== STAMP_PATH) done += 1;
     }
-    for (const rel of files.seed) {
-      if (writeFileSafely(toAbsolute(root, rel), /** @type {Buffer} */ (kit.seeds.get(rel)), true)) done += 1;
-    }
-    for (const rel of files.delete) {
-      removeFile(root, rel);
-      done += 1;
-    }
-    if (settings.action !== "unchanged") {
-      writeFileSafely(toAbsolute(root, SETTINGS_PATH), Buffer.from(settings.text, "utf8"));
-      done += 1;
-    }
-    if (stamp.action !== "unchanged") writeFileSafely(toAbsolute(root, STAMP_PATH), Buffer.from(stamp.text, "utf8"));
   } catch (error) {
     throw new SyncError(
       `writing to the target failed after ${plural(done, "change")}: ${messageOf(error)}. Fix the cause and run sync again (it continues where it stopped); git -C "${root}" status shows what changed.`,
@@ -1536,6 +1583,67 @@ function resolveSource(sourceOption) {
 }
 
 /**
+ * @typedef {object} SyncPlan
+ * @property {Stamp | null} previous the target's stamp before this sync
+ * @property {SkillSelection} skills which skills are synced
+ * @property {FilePlan} files
+ * @property {WritePlan} settings
+ * @property {WritePlan} stamp
+ * @property {boolean} anythingElse whether files or the settings change
+ * @property {string[]} warnings
+ */
+
+/**
+ * Plans a sync of the kit into a target and writes nothing: what to add, update, delete, seed and keep, and the
+ * settings and the stamp. The target is read only through `inspect` (inspectTarget for a folder; the Hermod Control
+ * Room answers from GitHub). `inspect` is synchronous and is asked about the stamp, the settings, every kit file and
+ * seed, and every file the stamp lists, so a reader over a network fetches those first. A plan with conflicts must
+ * not be applied (planWrites refuses it). A local run adds its own checks and then applies the plan with applyPlan.
+ * @param {object} input
+ * @param {Kit} input.kit
+ * @param {string} input.ref as given (a tag or a full commit sha)
+ * @param {string} input.commit
+ * @param {(rel: string) => TargetState} input.inspect
+ * @param {SkillsChoice | undefined} input.skills
+ * @param {boolean} input.force
+ * @param {Date} [now]
+ * @returns {SyncPlan}
+ */
+export function planSync({ kit, ref, commit, inspect, skills: requested, force }, now = new Date()) {
+  // The stamp records ref and commit, so every caller gets the CLI's pinned forms: a full commit sha, and as the ref
+  // either that commit or a tag name. (That a name is a tag, not a branch, is the caller's to know: runSync resolves
+  // it with resolveRef.)
+  if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(commit)) throw new SyncError(`the commit must be a full sha (found ${JSON.stringify(commit.slice(0, 80))}).`);
+  if (/^[0-9a-f]{4,64}$/.test(ref) ? ref !== commit : !isSafeTagName(ref)) {
+    throw new SyncError(`the ref must be the full commit sha or a tag name (found ${JSON.stringify(ref.slice(0, 80))}).`);
+  }
+  const stampState = inspect(STAMP_PATH);
+  if (stampState.kind === "other" || stampState.kind === "blocked") {
+    throw new SyncError(`${STAMP_PATH} in the target ${stampState.reason}.`);
+  }
+  const previous = stampState.kind === "file" ? parseStamp(stampState.data) : null;
+  const skills = chooseSkills(kit.skills, requested, previous, describeRef(ref, commit));
+  const files = planFiles({
+    files: withoutSkills(kit.files, skills.notChosen),
+    seeds: kit.seeds,
+    previous: previous?.files ?? null,
+    inspect,
+    force,
+    notChosen: skills.notChosen,
+  });
+  const settings = planSettings(inspect, kit.hooks);
+  const writesFiles = files.add.length + files.update.length + files.delete.length + files.seed.length > 0;
+  const anythingElse = writesFiles || settings.action !== "unchanged";
+  const stamp = planStamp(previous, { kit: kit.version, ref, commit, skills: skills.chosen, files: files.manifest }, anythingElse, now);
+  /** @type {string[]} */
+  const warnings = [];
+  if (previous && compareVersions(kit.version, previous.kit) < 0) {
+    warnings.push(`kit ${kit.version} is older than the installed kit ${previous.kit}.`);
+  }
+  return { previous, skills, files, settings, stamp, anythingElse, warnings };
+}
+
+/**
  * Checks everything, plans, and applies the plan unless it is a dry run or has conflicts. Throws SyncError when it
  * refuses before planning (a floating ref, an unusable target, uncommitted changes, unreadable settings).
  * @param {Options} options
@@ -1556,34 +1664,10 @@ export function runSync(options, now = new Date()) {
   }
   const kit = readKitAt(source.dir, commit, options.ref);
   const inspect = (/** @type {string} */ rel) => inspectTarget(target, rel);
-  const stampState = inspect(STAMP_PATH);
-  if (stampState.kind === "other" || stampState.kind === "blocked") {
-    throw new SyncError(`${STAMP_PATH} in the target ${stampState.reason}.`);
-  }
-  const previous = stampState.kind === "file" ? parseStamp(stampState.data) : null;
-  const skills = chooseSkills(kit.skills, options.skills, previous, describeRef(options.ref, commit));
-  const files = planFiles({
-    files: withoutSkills(kit.files, skills.notChosen),
-    seeds: kit.seeds,
-    previous: previous?.files ?? null,
-    inspect,
-    force: options.force,
-    notChosen: skills.notChosen,
-  });
-  const settings = planSettings(inspect, kit.hooks);
-  const writesFiles = files.add.length + files.update.length + files.delete.length + files.seed.length > 0;
-  const anythingElse = writesFiles || settings.action !== "unchanged";
-  const stamp = planStamp(
-    previous,
-    { kit: kit.version, ref: options.ref, commit, skills: skills.chosen, files: files.manifest },
-    anythingElse,
+  const { previous, skills, files, settings, stamp, anythingElse, warnings } = planSync(
+    { kit, ref: options.ref, commit, inspect, skills: options.skills, force: options.force },
     now,
   );
-  /** @type {string[]} */
-  const warnings = [];
-  if (previous && compareVersions(kit.version, previous.kit) < 0) {
-    warnings.push(`kit ${kit.version} is older than the installed kit ${previous.kit}.`);
-  }
   if (git(target, ["check-ignore", "-q", "--", STAMP_PATH]).ok) {
     warnings.push(`git ignores ${STAMP_PATH} in the target, so the synced files cannot be committed; check its .gitignore.`);
   }
