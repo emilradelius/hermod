@@ -129,6 +129,34 @@ describe("sync, planned from data", () => {
     }
   });
 
+  it("skips folder entries, as GitHub's recursive tree lists them", () => {
+    const listed = spawnSync("git", ["ls-tree", "-r", "-t", "-z", "--full-tree", source.v2, "--", "kit"], { cwd: source.dir, env: sandbox.env });
+    const entries = sync.parseLsTree(listed.stdout);
+    expect(entries.some((e) => e.type === "tree")).toBe(true);
+    const read = (e: Entry) => spawnSync("git", ["cat-file", "blob", e.oid], { cwd: source.dir, env: sandbox.env }).stdout;
+    expect(sync.kitFromEntries(entries, read, "v2", "the fixture")).toEqual(remoteKit(source.v2));
+  });
+
+  it("checks the ref and commit it records, and never writes a plan with conflicts", () => {
+    const kit = remoteKit(source.v2);
+    const plan = (ref: string, commit: string) => () => sync.planSync({ kit, ref, commit, inspect: memoryInspect(new Map()), skills: undefined, force: false });
+    expect(plan("main", source.v2.slice(0, 7))).toThrow(/full sha/);
+    expect(plan(source.v2.slice(0, 12), source.v2)).toThrow(/full commit sha or a tag/);
+    expect(plan("../x", source.v2)).toThrow(/full commit sha or a tag/);
+    expect(plan("v0.2.0", source.v2)).not.toThrow();
+    expect(plan(source.v2, source.v2)).not.toThrow();
+
+    // A kit file changed in the target: the plan has a conflict, and planWrites refuses it.
+    const target = sandbox.makeTarget(DEFAULT_TARGET_FILES);
+    runSync(target, source.v1);
+    const files = claudeFiles(target);
+    const changed = [...files.keys()].find((p) => p.startsWith(".claude/skills/reflect/"))!;
+    files.set(changed, Buffer.from("changed here\n"));
+    const conflicted = sync.planSync({ kit, ref: source.v2, commit: source.v2, inspect: memoryInspect(files), skills: undefined, force: false });
+    expect((conflicted.files as { conflict: unknown[] }).conflict.length).toBeGreaterThan(0);
+    expect(() => sync.planWrites(kit, conflicted.files, conflicted.settings, conflicted.stamp)).toThrow(/nothing may be written/);
+  });
+
   it("plans nothing for a target that is already at the release", () => {
     const target = sandbox.makeTarget(DEFAULT_TARGET_FILES);
     runSync(target, source.v2);

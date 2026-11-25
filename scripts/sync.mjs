@@ -848,9 +848,11 @@ function describeRef(ref, commit) {
 
 /**
  * Builds and checks the kit from the entries under kit/ at one commit, the same way for every reader: `git ls-tree`
- * here, and GitHub's tree API in the Hermod Control Room, which proposes the same sync as a pull request. The
- * entries are listed as `git ls-tree -r` lists them (files only, no folders). `read` gives an entry's bytes; it is
- * called only for the files a sync uses, and the bytes must hash to the entry's object id.
+ * here, and GitHub's tree API in the Hermod Control Room, which proposes the same sync as a pull request. Folder
+ * entries (a recursive tree from GitHub's API lists them) are skipped; symbolic links and submodules are refused.
+ * `read` gives an entry's bytes. It is called for every file under kit/files and kit/seed (optional skills too) and
+ * for kit/VERSION, kit/settings.hooks.json and kit/skills.json, never for other files such as kit/README.md. It is
+ * synchronous, so a reader over a network fetches those files first. The bytes must hash to the entry's object id.
  * @param {TreeEntry[]} entries
  * @param {(entry: TreeEntry) => Buffer} read
  * @param {string} at the ref and commit, for messages
@@ -877,6 +879,7 @@ export function kitFromEntries(entries, read, at, source) {
   /** @type {Buffer | null} */
   let skillsData = null;
   for (const entry of entries) {
+    if (entry.type === "tree") continue; // a folder: its files are listed on their own
     const isFile = entry.path.startsWith(KIT_FILES_DIR);
     const isSeed = entry.path.startsWith(KIT_SEED_DIR);
     const isVersion = entry.path === KIT_VERSION_FILE;
@@ -1490,6 +1493,10 @@ function removeFile(root, rel) {
  * @returns {PlannedWrite[]}
  */
 export function planWrites(kit, files, settings, stamp) {
+  // A plan with conflicts is applied by nobody: a local sync writes nothing, and neither may anyone else.
+  if (files.conflict.length > 0) {
+    throw new SyncError(`${plural(files.conflict.length, "conflict")} (${listSome(files.conflict.map((c) => c.path))}); nothing may be written.`);
+  }
   /** @type {PlannedWrite[]} */
   const writes = [];
   for (const rel of [...files.add, ...files.update]) writes.push({ path: rel, data: /** @type {Buffer} */ (kit.files.get(rel)), seed: false });
@@ -1589,7 +1596,9 @@ function resolveSource(sourceOption) {
 /**
  * Plans a sync of the kit into a target and writes nothing: what to add, update, delete, seed and keep, and the
  * settings and the stamp. The target is read only through `inspect` (inspectTarget for a folder; the Hermod Control
- * Room answers from GitHub). A local run adds its own checks and then applies the plan with applyPlan.
+ * Room answers from GitHub). `inspect` is synchronous and is asked about the stamp, the settings, every kit file and
+ * seed, and every file the stamp lists, so a reader over a network fetches those first. A plan with conflicts must
+ * not be applied (planWrites refuses it). A local run adds its own checks and then applies the plan with applyPlan.
  * @param {object} input
  * @param {Kit} input.kit
  * @param {string} input.ref as given (a tag or a full commit sha)
@@ -1601,6 +1610,13 @@ function resolveSource(sourceOption) {
  * @returns {SyncPlan}
  */
 export function planSync({ kit, ref, commit, inspect, skills: requested, force }, now = new Date()) {
+  // The stamp records ref and commit, so every caller gets the CLI's pinned forms: a full commit sha, and as the ref
+  // either that commit or a tag name. (That a name is a tag, not a branch, is the caller's to know: runSync resolves
+  // it with resolveRef.)
+  if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(commit)) throw new SyncError(`the commit must be a full sha (found ${JSON.stringify(commit.slice(0, 80))}).`);
+  if (/^[0-9a-f]{4,64}$/.test(ref) ? ref !== commit : !isSafeTagName(ref)) {
+    throw new SyncError(`the ref must be the full commit sha or a tag name (found ${JSON.stringify(ref.slice(0, 80))}).`);
+  }
   const stampState = inspect(STAMP_PATH);
   if (stampState.kind === "other" || stampState.kind === "blocked") {
     throw new SyncError(`${STAMP_PATH} in the target ${stampState.reason}.`);
